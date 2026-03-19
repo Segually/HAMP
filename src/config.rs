@@ -23,15 +23,12 @@ pub struct Config {
     /// Game-server stub port.
     pub game_port: u16,
 
-    // ── Admin (always localhost-only) ──────────────────────────────────────
-    /// Admin bridge port — the server listens here for CLI commands.
-    pub admin_port: u16,
+    /// TCP port for the remote admin terminal.
+    pub terminal_port: u16,
 
-    /// Admin event listener port — receives CHAT_RECV notifications.
-    pub event_port: u16,
-
-    /// Set to `false` to disable the admin console entirely.
-    pub admin_console: bool,
+    /// Password required to authenticate to the remote terminal.
+    /// Set to an empty string to disable the terminal entirely.
+    pub terminal_password: String,
 
     // ── Persistence ────────────────────────────────────────────────────────
     /// Path to the SQLite database file.  Relative paths are resolved from
@@ -45,9 +42,8 @@ impl Default for Config {
             host:          "0.0.0.0".to_string(),
             friend_port:   7002,
             game_port:     7003,
-            admin_port:    7004,
-            event_port:    7005,
-            admin_console: true,
+            terminal_port:     7006,
+            terminal_password: String::new(),
             db_path:       "friend_server.db".to_string(),
         }
     }
@@ -93,15 +89,12 @@ friend_port = 7002
 # Game-server stub.
 game_port = 7003
 
-# ── Admin (always bound to 127.0.0.1) ─────────────────────────────────────
-# Port for the admin bridge — receives CLI commands.
-admin_port = 7004
+# ── Remote admin terminal ──────────────────────────────────────────────────
+# TCP port for the remote admin terminal (telnet / netcat).
+terminal_port = 7006
 
-# Port for the admin event listener — receives CHAT_RECV notifications.
-event_port = 7005
-
-# Set to false to disable the admin console entirely.
-admin_console = true
+# Password required to log in. Leave empty ("") to disable the terminal.
+terminal_password = ""
 
 # ── Persistence ────────────────────────────────────────────────────────────
 # Path to the SQLite database file (relative to the server's working dir).

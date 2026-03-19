@@ -11,7 +11,7 @@ use crate::packet::{craft_batch, pack_string, to_hex_upper, DEFAULT_WORLD};
 use crate::packet::{
     AcceptFriendOk, AddFriendFail, AddFriendOk, AuthFail, FriendOnline, HeartbeatReply,
     JoinGrantHostClear, JumpToGame, PushAccepted, PushFriendReq, PushRemoved,
-    RegisterFail, RegisterOk, RelayJoinReq, RelayPrivateMsg, RemoveFriendOk, ServerPacket, Str16,
+    RegisterFail, RegisterOk, RelayJoinReq, RelayPrivateMsg, RemoveFriendOk, Str16,
 };
 use crate::state::{SessionConn, SharedState};
 use crate::packet::ClientPacket;
@@ -448,7 +448,7 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
 fn notify_chat_event(sender: &str, target: &str, msg: &str) {
     use std::io::Write;
     use std::net::TcpStream;
-    const EVENT_PORT: u16 = 7005; // overridden at runtime via Config if needed
+    const EVENT_PORT: u16 = 7005;
     if let Ok(mut s) = TcpStream::connect(("127.0.0.1", EVENT_PORT)) {
         let _ = s.write_all(format!("CHAT_RECV|{}|{}|{}", sender, target, msg).as_bytes());
     }

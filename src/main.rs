@@ -1,3 +1,5 @@
+// main.rs — entry point.
+
 mod admin;
 mod config;
 mod db;
@@ -9,36 +11,39 @@ mod structs;
 
 use std::sync::Arc;
 
-use crate::{db::Db, state::SharedState};
-
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = config::load();
     let args: Vec<String> = std::env::args().collect();
 
-    // ── Console mode (separate window) ────────────────────────────────────
-    if args.get(1).map(|s| s == "console").unwrap_or(false) {
-        // admin::command_console();
-        return;
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .ok_or("executable has no parent directory")?
+        .to_owned();
+
+    let db = db::Db::open(
+        exe_dir
+            .join(&cfg.db_path)
+            .to_str()
+            .ok_or("db path is not valid UTF-8")?,
+    )?;
+
+    let state = state::SharedState::new(db);
+
+    println!("=== FRIEND SERVER ===");
+    println!("  DB:          {}", cfg.db_path);
+    println!("  Friend port: {}", cfg.friend_port);
+    if !cfg.terminal_password.is_empty() {
+        println!("  Terminal:    0.0.0.0:{}", cfg.terminal_port);
     }
 
-    let db_path = std::env::current_exe()
-        .expect("could not locate executable")
-        .parent()
-        .expect("executable has no parent directory")
-        .join(&cfg.db_path);
+    // let gs_state = Arc::clone(&state);
+    // let gs_cfg   = cfg.clone();
+    // std::thread::spawn(move || game_server::run(&gs_cfg, gs_state));
 
-    let db = Db::open(db_path.to_str().expect("db path is not valid UTF-8"))
-        .expect("failed to open database");
+    let t_state = Arc::clone(&state);
+    let t_cfg = cfg.clone();
+    std::thread::spawn(move || admin::run_terminal(t_cfg, t_state));
 
-    // ── Server mode ───────────────────────────────────────────────────────
-    let shared = SharedState::new(db);
-
-    println!("[HAMP] Launching!");
-
-    // Game server runs on a background thread; friend server runs here on
-    // the main thread so the process lives as long as the friend server does.
-    //let gs_state = Arc::clone(&shared);
-    //std::thread::spawn(move || game_server::run_game_server(gs_state));
-
-    friend_server::run(&cfg, shared);
+    friend_server::run(&cfg, state);
+    Ok(())
 }

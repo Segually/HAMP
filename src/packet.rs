@@ -614,24 +614,6 @@ impl ServerPacket for RelayJoinReq { const ID: u8 = 0x2D; }
 pub struct JoinGrantHostClear;
 impl ServerPacket for JoinGrantHostClear { const ID: u8 = 0x2B; }
 
-/// `0x2B` (with payload) — join grant or denial relayed to the **joiner**.
-///
-/// Wire (after packet-ID):
-///   [from: Str16] [status: u8]
-///   if status == 1: [room_name: Str16]
-#[binwrite]
-#[derive(Debug)]
-#[bw(little)]
-pub struct JoinGrantRelay {
-    /// Display name of the host player.
-    pub from:      Str16,
-    pub status:    u8,
-    /// Present only when `status == 1`. binrw skips writing `None`.
-    #[bw(if(*status == 1))]
-    pub room_name: Option<Str16>,
-}
-impl ServerPacket for JoinGrantRelay { const ID: u8 = 0x2B; }
-
 /// `0x25` — P2P handoff packet sent to the **joiner** after a successful grant.
 ///
 /// Wire (after packet-ID):
@@ -654,3 +636,43 @@ pub struct JumpToGame {
 }
 impl ServerPacket for JumpToGame { const ID: u8 = 0x25; }
 
+/// `0x2E` — triggers the client's popup dialog.
+///
+/// Wire (after packet-ID): (empty)
+///
+/// The message string displayed is a hardcoded string literal inside the
+/// client (`StringLiteral_6999`) — there is no text field in this packet.
+#[binwrite]
+#[derive(Debug, Default)]
+#[bw(little)]
+pub struct ShowPopup;
+impl ServerPacket for ShowPopup { const ID: u8 = 0x2E; }
+
+/// `0x2F` — shows a warning overlay on the client.
+///
+/// Wire (after packet-ID): [code: u8]
+///
+/// `code` is passed directly to `FriendServerReceiver$$ShowWarning`.
+/// The meaning of each value is determined by the client; `0` is a no-op
+/// (the client skips the call entirely when it reads zero).
+#[binwrite]
+#[derive(Debug)]
+#[bw(little)]
+pub struct ShowWarning {
+    pub code: u8,
+}
+impl ServerPacket for ShowWarning { const ID: u8 = 0x2F; }
+
+/// `0x34` — awards gems to the client.
+///
+/// Wire (after packet-ID): [amount: i16 LE]
+///
+/// Uses a signed short (`GetShort`) — negative values are technically
+/// possible but their effect is client-defined.
+#[binwrite]
+#[derive(Debug)]
+#[bw(little)]
+pub struct GiveGems {
+    pub amount: i16,
+}
+impl ServerPacket for GiveGems { const ID: u8 = 0x34; }
