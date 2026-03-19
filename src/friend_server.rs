@@ -7,6 +7,7 @@ use std::sync::Arc;
 use rand::distr::{Alphanumeric, SampleString};
 
 use crate::config::Config;
+use crate::game_server;
 use crate::packet::{craft_batch, pack_string, to_hex_upper, DEFAULT_WORLD};
 use crate::packet::{
     AcceptFriendOk, AddFriendFail, AddFriendOk, AuthFail, FriendOnline, HeartbeatReply,
@@ -81,7 +82,7 @@ pub fn handle_packet(
     conn:         &Arc<SessionConn>,
     current_user: &mut Option<String>,
     state:        &SharedState,
-    friend_port:  u16,
+    cfg:          &Config,
 ) {
     match packet {
 
@@ -342,23 +343,25 @@ pub fn handle_packet(
                     // 2. Unfreeze the joiner.
                     tc.send_pkt(&JoinGrantHostClear, "S->C [JOINER_UI_UNFREEZE]");
 
-                    // 3. Fire the P2P handoff jump signal.
+                    // 3. Spawn a server-side game session and redirect both players.
                     if status == 1 {
-                        let room    = room_name.unwrap_or_default();
-                        let host_ip = conn.peer_ip().to_string();
+                        let room    = room_name.unwrap_or_else(|| user.clone());
                         let display = state.db.get_display(user)
                             .unwrap_or_else(|| user.clone());
-                        tc.send_pkt(
-                            &JumpToGame {
+                        let ip = if cfg.public_ip.is_empty() { &cfg.host } else { &cfg.public_ip };
+
+                        if let Some(port) = game_server::spawn_session(room.clone(), cfg) {
+                            let jump = JumpToGame {
                                 display:       Str16::new(&display),
                                 token:         Str16::new(&room),
-                                host_ip:       Str16::new(&host_ip),
+                                host_ip:       Str16::new(ip),
                                 mode:          Str16::new("P2P"),
-                                port:          friend_port,
+                                port,
                                 password_flag: 0x00,
-                            },
-                            "S->C [JUMP_SIGNAL_0x25]",
-                        );
+                            };
+                            tc.send_pkt(&jump, "S->C [JUMP_SIGNAL_JOINER]");
+                            conn.send_pkt(&jump, "S->C [JUMP_SIGNAL_HOST]");
+                        }
                     }
                 }
             }
@@ -395,7 +398,7 @@ pub fn handle_packet(
 
 // ── Per-client handler ─────────────────────────────────────────────────────
 
-fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<SharedState>, friend_port: u16) {
+fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<SharedState>, cfg: Config) {
     const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
     const READ_POLL:         std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -459,7 +462,7 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
 
         println!("\n[CLIENT -> FRIEND] [{}] | {}", packet.id().name(), to_hex_upper(data));
 
-        handle_packet(packet, &conn, &mut current_user, &state, friend_port);
+        handle_packet(packet, &conn, &mut current_user, &state, &cfg);
     }
 
     // ── Cleanup on disconnect ──────────────────────────────────────────────
@@ -497,8 +500,8 @@ pub fn run(cfg: &Config, state: Arc<SharedState>) {
                 let peer = stream.peer_addr()
                     .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
                 let state = Arc::clone(&state);
-                let friend_port = cfg.friend_port;
-                std::thread::spawn(move || handle_client(stream, peer, state, friend_port));
+                let cfg   = cfg.clone();
+                std::thread::spawn(move || handle_client(stream, peer, state, cfg));
             }
             Err(e) => eprintln!("[FRIEND] accept error: {}", e),
         }

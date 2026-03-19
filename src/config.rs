@@ -17,8 +17,15 @@ pub struct Config {
     /// Friend-list / social server port.
     pub friend_port: u16,
 
-    /// Game-server stub port.
+    /// Lower bound of the dynamic port range for per-session game servers.
     pub game_port: u16,
+
+    /// Upper bound of the dynamic port range for per-session game servers.
+    pub game_port_max: u16,
+
+    /// Public-facing IP address to embed in game-session redirect packets.
+    /// Leave empty to use the value of `host`.
+    pub public_ip: String,
 
     /// TCP port for the remote admin terminal.
     pub terminal_port: u16,
@@ -38,7 +45,9 @@ impl Default for Config {
         Self {
             host:          "0.0.0.0".to_string(),
             friend_port:   7002,
-            game_port:     7003,
+            game_port:     7100,
+            game_port_max: 7800,
+            public_ip:     String::new(),
             terminal_port:     7006,
             terminal_password: String::new(),
             db_path:       "friend_server.db".to_string(),
@@ -94,8 +103,12 @@ host = "0.0.0.0"
 # Friend-list / social server (clients connect here).
 friend_port = 7002
 
-# Game-server stub.
-game_port = 7003
+# Public IP to embed in game-session redirect packets (leave empty to use host).
+public_ip = ""
+
+# Dynamic port range for per-session game servers [game_port, game_port_max].
+game_port     = 7100
+game_port_max = 7800
 
 # ── Remote admin terminal ──────────────────────────────────────────────────
 # TCP port for the remote admin terminal (telnet / netcat).

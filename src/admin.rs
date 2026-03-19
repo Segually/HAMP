@@ -34,13 +34,13 @@ struct AdminSession {
     spoofed_user: Option<String>,
     /// The Sink connection registered in `SharedState::sessions` for the spoof.
     spoof_conn:   Option<Arc<SessionConn>>,
-    /// Forwarded from Config so handle_packet has the right port for JumpToGame.
-    friend_port:  u16,
+    /// Server config forwarded to handle_packet.
+    cfg:          Config,
 }
 
 impl AdminSession {
-    fn new(friend_port: u16) -> Self {
-        Self { spoofed_user: None, spoof_conn: None, friend_port }
+    fn new(cfg: Config) -> Self {
+        Self { spoofed_user: None, spoof_conn: None, cfg }
     }
 
     /// Tears down any active spoof: removes the session and broadcasts offline.
@@ -69,16 +69,16 @@ pub fn run_terminal(cfg: Config, state: Arc<SharedState>) {
     for incoming in listener.incoming() {
         if let Ok(stream) = incoming {
             let state       = Arc::clone(&state);
-            let password    = cfg.terminal_password.clone();
-            let friend_port = cfg.friend_port;
-            std::thread::spawn(move || session(stream, password, state, friend_port));
+            let password = cfg.terminal_password.clone();
+            let cfg      = cfg.clone();
+            std::thread::spawn(move || session(stream, password, state, cfg));
         }
     }
 }
 
 // ── Session ────────────────────────────────────────────────────────────────
 
-fn session(mut stream: TcpStream, password: String, state: Arc<SharedState>, friend_port: u16) {
+fn session(mut stream: TcpStream, password: String, state: Arc<SharedState>, cfg: Config) {
     let peer = stream.peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
@@ -96,7 +96,7 @@ fn session(mut stream: TcpStream, password: String, state: Arc<SharedState>, fri
     let _ = stream.write_all(b"OK\n");
     println!("[terminal] {} authenticated", peer);
 
-    let mut adm = AdminSession::new(friend_port);
+    let mut adm = AdminSession::new(cfg);
 
     loop {
         let line = match read_line(&mut stream) {
@@ -306,7 +306,7 @@ fn cmd_recv(adm: &mut AdminSession, state: &SharedState, args: &str) -> String {
     };
 
     let mut current_user: Option<String> = Some(user);
-    handle_packet(packet, &conn, &mut current_user, state, adm.friend_port);
+    handle_packet(packet, &conn, &mut current_user, state, &adm.cfg);
 
     let bytes = conn.drain_sink();
     if bytes.is_empty() {
