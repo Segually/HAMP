@@ -79,6 +79,16 @@ impl Db {
         ).map(|n| n > 0).unwrap_or(false)
     }
 
+    /// Deletes a player and all their associated data (friends and pending
+    /// cascade automatically via the schema's ON DELETE CASCADE).
+    /// Returns `false` if the player did not exist.
+    pub fn delete_player(&self, username: &str) -> bool {
+        let conn = self.0.lock().unwrap();
+        conn.execute("DELETE FROM players WHERE username = ?1", params![username])
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
     /// Returns all registered usernames.
     pub fn get_all_usernames(&self) -> Vec<String> {
         let conn = self.0.lock().unwrap();

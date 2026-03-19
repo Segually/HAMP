@@ -33,7 +33,7 @@ pub enum PacketId {
     JoinGrant     = 0x2B, // C→S  host grants or denies a join request
     WorldUpdate   = 0x2C, // C→S  client broadcasts its world/lobby state
     JoinReq       = 0x2D, // C→S  request to join another player's session
-    ShowPopup     = 0x2E, // S→C  hi
+    SubmitReport  = 0x2E, // C→S  submit a player report (also S→C: show popup)
     ShowWarning   = 0x2F, // S→C  stop it
     GiveGems      = 0x34, // S→C  the server gave you gems
 }
@@ -59,7 +59,7 @@ impl PacketId {
             0x2B => JoinGrant,
             0x2C => WorldUpdate,
             0x2D => JoinReq,
-            0x2E => ShowPopup,
+            0x2E => SubmitReport,
             0x2F => ShowWarning,
             0x34 => GiveGems,
             _    => return None,
@@ -86,7 +86,7 @@ impl PacketId {
             JoinGrant    => "JOIN_GRANT",
             WorldUpdate  => "WORLD_UPDATE",
             JoinReq      => "JOIN_REQ",
-            ShowPopup    => "SHOW_POPUP",
+            SubmitReport => "SUBMIT_REPORT",
             ShowWarning  => "SHOW_WARNING",
             GiveGems     => "GIVE_GEMS"
         }

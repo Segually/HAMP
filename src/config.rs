@@ -6,9 +6,6 @@
 
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
-
-pub const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -49,27 +46,38 @@ impl Default for Config {
     }
 }
 
-/// Loads `config.toml` from the current directory.
+/// Resolves `config.toml` next to the running binary so it lands in
+/// `target/debug/` (or `target/release/`) and is never committed by git.
+fn config_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_owned()))
+        .unwrap_or_default()
+        .join("config.toml")
+}
+
+/// Loads `config.toml` from the same directory as the binary.
 ///
 /// If the file does not exist a default one is written and the defaults are
 /// returned.  Parse errors are reported to stderr and defaults are used so
 /// the server can always start.
 pub fn load() -> Config {
-    if !Path::new(CONFIG_FILE).exists() {
-        let _ = fs::write(CONFIG_FILE, DEFAULT_TOML);
-        eprintln!("[config] No config.toml found — wrote defaults to {}", CONFIG_FILE);
+    let path = config_path();
+    if !path.exists() {
+        let _ = fs::write(&path, DEFAULT_TOML);
+        eprintln!("[config] No config.toml found — wrote defaults to {}", path.display());
         return Config::default();
     }
 
-    match fs::read_to_string(CONFIG_FILE) {
+    match fs::read_to_string(&path) {
         Err(e) => {
-            eprintln!("[config] Cannot read {}: {} — using defaults", CONFIG_FILE, e);
+            eprintln!("[config] Cannot read {}: {} — using defaults", path.display(), e);
             Config::default()
         }
         Ok(raw) => match toml::from_str(&raw) {
             Ok(cfg) => cfg,
             Err(e) => {
-                eprintln!("[config] Parse error in {}: {} — using defaults", CONFIG_FILE, e);
+                eprintln!("[config] Parse error in {}: {} — using defaults", path.display(), e);
                 Config::default()
             }
         },

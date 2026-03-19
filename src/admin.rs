@@ -6,18 +6,52 @@
 //   list                  — show online users and their IPs
 //   send <user|*> <hex>   — send a raw payload to one user or everyone
 //   kick <user>           — forcibly disconnect a user
+//   create <user> <token> — register a new player with an explicit token
+//   delete <user>         — delete a player (refused if they are online)
+//   spoof <user>          — inject a fake session for <user> (refused if online)
+//   unspoof               — tear down the active fake session
+//   recv <hex>            — feed a raw client packet to the spoofed user
+//   reports               — list all player reports
 //
 // Adding a new command
 // ────────────────────
 // 1. Add a match arm in `dispatch`.
-// 2. Write the handler as `fn cmd_<name>(state: &SharedState, args: &str) -> String`.
+// 2. Write the handler as `fn cmd_<name>(session: &mut AdminSession, state: &SharedState, args: &str) -> String`.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::state::SharedState;
+use crate::friend_server::handle_packet;
+use crate::packet::{craft_batch, to_hex_upper, ClientPacket, PushRemoved, ServerPacket, Str16};
+use crate::state::{SessionConn, SharedState};
+
+// ── Per-connection admin state ──────────────────────────────────────────────
+
+struct AdminSession {
+    /// The username currently being spoofed, if any.
+    spoofed_user: Option<String>,
+    /// The Sink connection registered in `SharedState::sessions` for the spoof.
+    spoof_conn:   Option<Arc<SessionConn>>,
+    /// Forwarded from Config so handle_packet has the right port for JumpToGame.
+    friend_port:  u16,
+}
+
+impl AdminSession {
+    fn new(friend_port: u16) -> Self {
+        Self { spoofed_user: None, spoof_conn: None, friend_port }
+    }
+
+    /// Tears down any active spoof: removes the session and broadcasts offline.
+    fn cleanup_spoof(&mut self, state: &SharedState) {
+        if let Some(ref user) = self.spoofed_user.take() {
+            state.sessions.write().unwrap().remove(user);
+            state.broadcast_status(user, false);
+            self.spoof_conn = None;
+        }
+    }
+}
 
 // ── Entry point ────────────────────────────────────────────────────────────
 
@@ -34,16 +68,17 @@ pub fn run_terminal(cfg: Config, state: Arc<SharedState>) {
 
     for incoming in listener.incoming() {
         if let Ok(stream) = incoming {
-            let state    = Arc::clone(&state);
-            let password = cfg.terminal_password.clone();
-            std::thread::spawn(move || session(stream, password, state));
+            let state       = Arc::clone(&state);
+            let password    = cfg.terminal_password.clone();
+            let friend_port = cfg.friend_port;
+            std::thread::spawn(move || session(stream, password, state, friend_port));
         }
     }
 }
 
 // ── Session ────────────────────────────────────────────────────────────────
 
-fn session(mut stream: TcpStream, password: String, state: Arc<SharedState>) {
+fn session(mut stream: TcpStream, password: String, state: Arc<SharedState>, friend_port: u16) {
     let peer = stream.peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
@@ -61,6 +96,8 @@ fn session(mut stream: TcpStream, password: String, state: Arc<SharedState>) {
     let _ = stream.write_all(b"OK\n");
     println!("[terminal] {} authenticated", peer);
 
+    let mut adm = AdminSession::new(friend_port);
+
     loop {
         let line = match read_line(&mut stream) {
             Some(s) => s,
@@ -70,21 +107,29 @@ fn session(mut stream: TcpStream, password: String, state: Arc<SharedState>) {
         if line.is_empty() { continue; }
 
         let (cmd, args) = line.split_once(' ').unwrap_or((line, ""));
-        let response = dispatch(cmd, args, &state);
+        let response = dispatch(cmd, args, &mut adm, &state);
         let _ = stream.write_all(response.as_bytes());
     }
 
+    // On disconnect, clean up any active spoof.
+    adm.cleanup_spoof(&state);
     println!("[terminal] {} disconnected", peer);
 }
 
 // ── Dispatch ───────────────────────────────────────────────────────────────
 
-fn dispatch(cmd: &str, args: &str, state: &SharedState) -> String {
+fn dispatch(cmd: &str, args: &str, adm: &mut AdminSession, state: &SharedState) -> String {
     match cmd.to_lowercase().as_str() {
-        "list" => cmd_list(state, args),
-        "send" => cmd_send(state, args),
-        "kick" => cmd_kick(state, args),
-        other  => format!("[!] Unknown command '{}'\n", other),
+        "list"    => cmd_list(state, args),
+        "send"    => cmd_send(state, args),
+        "kick"    => cmd_kick(state, args),
+        "create"  => cmd_create(state, args),
+        "delete"  => cmd_delete(adm, state, args),
+        "spoof"   => cmd_spoof(adm, state, args),
+        "unspoof" => cmd_unspoof(adm, state),
+        "recv"    => cmd_recv(adm, state, args),
+        "reports" => cmd_reports(state),
+        other     => format!("[!] Unknown command '{}'\n", other),
     }
 }
 
@@ -141,6 +186,149 @@ fn cmd_kick(state: &SharedState, args: &str) -> String {
         Some(conn) => { conn.disconnect(); format!("Kicked {}.\n", username) }
         None       => format!("[!] '{}' is not online.\n", username),
     }
+}
+
+fn cmd_create(state: &SharedState, args: &str) -> String {
+    let (user_raw, token) = match args.split_once(' ') {
+        Some(p) => p,
+        None    => return "[!] Usage: create <username> <token>\n".to_string(),
+    };
+    let user  = user_raw.trim().to_lowercase();
+    let token = token.trim();
+    if user.is_empty() || token.is_empty() {
+        return "[!] Usage: create <username> <token>\n".to_string();
+    }
+    if state.db.create_player(&user, user_raw.trim(), token) {
+        format!("Created player '{}' with token '{}'.\n", user, token)
+    } else {
+        format!("[!] Username '{}' is already taken.\n", user)
+    }
+}
+
+fn cmd_delete(adm: &mut AdminSession, state: &SharedState, args: &str) -> String {
+    let username = args.trim().to_lowercase();
+    if username.is_empty() {
+        return "[!] Usage: delete <username>\n".to_string();
+    }
+
+    // Refuse if this is the currently spoofed user.
+    if adm.spoofed_user.as_deref() == Some(username.as_str()) {
+        return format!("[!] '{}' is the active spoof — unspoof first.\n", username);
+    }
+
+    // Refuse if they are genuinely online.
+    if state.sessions.read().unwrap().contains_key(username.as_str()) {
+        return format!("[!] '{}' is currently online — kick them first.\n", username);
+    }
+
+    // Snapshot friends before deletion so we can notify them.
+    let friends = state.db.get_friends(&username);
+
+    if !state.db.delete_player(&username) {
+        return format!("[!] Player '{}' not found.\n", username);
+    }
+
+    // Notify any online friends that this user was removed from their list.
+    let pkt = PushRemoved { username: Str16::new(&username) };
+    let sessions = state.sessions.read().unwrap();
+    let mut notified = 0usize;
+    for (friend, _) in &friends {
+        if let Some(conn) = sessions.get(friend.as_str()) {
+            conn.send_pkt(&pkt, "S->C [PUSH_REMOVED] (delete)");
+            notified += 1;
+        }
+    }
+    drop(sessions);
+
+    if notified > 0 {
+        format!("Deleted player '{}'. Notified {} online friend(s).\n", username, notified)
+    } else {
+        format!("Deleted player '{}'.\n", username)
+    }
+}
+
+fn cmd_spoof(adm: &mut AdminSession, state: &SharedState, args: &str) -> String {
+    let username = args.trim().to_lowercase();
+    if username.is_empty() {
+        return "[!] Usage: spoof <username>\n".to_string();
+    }
+
+    if adm.spoofed_user.is_some() {
+        return "[!] Already spoofing — run 'unspoof' first.\n".to_string();
+    }
+
+    if !state.db.player_exists(&username) {
+        return format!("[!] Player '{}' does not exist.\n", username);
+    }
+
+    if state.sessions.read().unwrap().contains_key(username.as_str()) {
+        return format!("[!] '{}' is already online.\n", username);
+    }
+
+    let label = format!("SPOOF:{}", username);
+    let conn  = SessionConn::new_sink(label);
+
+    state.sessions.write().unwrap().insert(username.clone(), Arc::clone(&conn));
+    state.broadcast_status(&username, true);
+
+    adm.spoofed_user = Some(username.clone());
+    adm.spoof_conn   = Some(conn);
+
+    format!("Now spoofing as '{}'. Use 'recv <hex>' to inject packets.\n", username)
+}
+
+fn cmd_unspoof(adm: &mut AdminSession, state: &SharedState) -> String {
+    if adm.spoofed_user.is_none() {
+        return "[!] No active spoof.\n".to_string();
+    }
+    let name = adm.spoofed_user.clone().unwrap();
+    adm.cleanup_spoof(state);
+    format!("Spoof for '{}' removed.\n", name)
+}
+
+fn cmd_recv(adm: &mut AdminSession, state: &SharedState, args: &str) -> String {
+    let (user, conn) = match (&adm.spoofed_user, &adm.spoof_conn) {
+        (Some(u), Some(c)) => (u.clone(), Arc::clone(c)),
+        _ => return "[!] No active spoof — run 'spoof <user>' first.\n".to_string(),
+    };
+
+    let payload = match parse_hex(args.trim()) {
+        Ok(b)  => b,
+        Err(e) => return format!("[!] Bad hex: {}\n", e),
+    };
+
+    // Wrap in a batch envelope so ClientPacket::parse can read the header.
+    let framed = craft_batch(0, &payload);
+
+    let packet = match ClientPacket::parse(&framed) {
+        Some(p) => p,
+        None    => return "[!] Could not parse packet — unknown or malformed ID.\n".to_string(),
+    };
+
+    let mut current_user: Option<String> = Some(user);
+    handle_packet(packet, &conn, &mut current_user, state, adm.friend_port);
+
+    let bytes = conn.drain_sink();
+    if bytes.is_empty() {
+        "OK (no response generated).\n".to_string()
+    } else {
+        format!("Response: {}\n", to_hex_upper(&bytes))
+    }
+}
+
+fn cmd_reports(state: &SharedState) -> String {
+    let reports = state.db.get_reports();
+    if reports.is_empty() {
+        return "No reports on file.\n".to_string();
+    }
+    let mut out = format!("{} report(s):\n", reports.len());
+    for r in &reports {
+        out.push_str(&format!(
+            "  [{}] #{} {} reported {} — {}\n",
+            r.timestamp, r.id, r.reporter, r.reported, r.reason
+        ));
+    }
+    out
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

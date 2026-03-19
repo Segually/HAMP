@@ -6,6 +6,8 @@ mod db;
 mod friend_server;
 mod game_server;
 mod packet;
+mod packets_client;
+mod packets_server;
 mod state;
 mod structs;
 
