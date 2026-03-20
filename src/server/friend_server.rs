@@ -6,16 +6,16 @@ use std::sync::Arc;
 
 use rand::distr::{Alphanumeric, SampleString};
 
-use crate::config::Config;
-use crate::game_server;
-use crate::packet::{craft_batch, pack_string, to_hex_upper, DEFAULT_WORLD};
-use crate::packet::{
+use crate::utils::config::Config;
+use crate::server::game_server;
+use crate::defs::packet::{craft_batch, pack_string, to_hex_upper, DEFAULT_WORLD};
+use crate::defs::packet::{
     AcceptFriendOk, AddFriendFail, AddFriendOk, AuthFail, FriendOnline, HeartbeatReply,
     JoinGrantHostClear, JumpToGame, PushAccepted, PushFriendReq, PushRemoved,
     RegisterFail, RegisterOk, RelayJoinReq, RelayPrivateMsg, RemoveFriendOk, ShowPopup, Str16,
 };
-use crate::state::{SessionConn, SharedState};
-use crate::packet::ClientPacket;
+use crate::defs::state::{SessionConn, SharedState};
+use crate::defs::packet::ClientPacket;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ fn build_login_success(username: &str, state: &SharedState) -> Vec<u8> {
     }
 
     // ── Fixed trailer: N_ToPing(0) give_gems(0) warn(0) unk(0) N_trophy(0) ─
-    resp.extend_from_slice(crate::packet::LOGIN_SUCCESS_TRAILER);
+    resp.extend_from_slice(crate::defs::packet::LOGIN_SUCCESS_TRAILER);
     resp
 }
 
@@ -307,7 +307,6 @@ pub fn handle_packet(
                         "S->C [RELAY_PM]",
                     );
                 }
-                notify_chat_event(user, &t, &message);
             }
         }
 
@@ -473,7 +472,8 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
         // Any valid packet resets the heartbeat deadline.
         last_heartbeat = std::time::Instant::now();
 
-        println!("\n[CLIENT -> FRIEND] [{}] | {}", packet.id().name(), to_hex_upper(data));
+        println!("\n[C->S] [{}] {}({}) | {}", packet.id().name(),
+            current_user.as_deref().unwrap_or("?"), conn.peer_ip(), to_hex_upper(data));
 
         handle_packet(packet, &conn, &mut current_user, &state, &cfg);
     }
@@ -498,18 +498,6 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
     }
 }
 
-// ── Chat event notification ────────────────────────────────────────────────
-
-/// Fires a `CHAT_RECV|sender|target|msg` event at the admin event listener.
-/// Best-effort; failures are silently ignored so PM delivery is never blocked.
-fn notify_chat_event(sender: &str, target: &str, msg: &str) {
-    use std::io::Write;
-    use std::net::TcpStream;
-    const EVENT_PORT: u16 = 7005;
-    if let Ok(mut s) = TcpStream::connect(("127.0.0.1", EVENT_PORT)) {
-        let _ = s.write_all(format!("CHAT_RECV|{}|{}|{}", sender, target, msg).as_bytes());
-    }
-}
 
 // ── Server entry point ─────────────────────────────────────────────────────
 

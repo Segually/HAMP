@@ -15,8 +15,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-use crate::config::Config;
-use crate::packet::{craft_batch, pack_string, unpack_string};
+use crate::utils::config::Config;
+use crate::defs::packet::{craft_batch, pack_string, unpack_string};
 
 // ── Per-session player ─────────────────────────────────────────────────────
 

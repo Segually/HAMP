@@ -14,8 +14,8 @@ use binrw::{binrw, BinRead, BinWrite};
 
 // Re-export the two split modules so all existing `use crate::packet::*` paths
 // continue to resolve without touching any other file.
-pub use crate::packets_client::ClientPacket;
-pub use crate::packets_server::{
+pub use crate::defs::packets_client::ClientPacket;
+pub use crate::defs::packets_server::{
     AcceptFriendOk, AddFriendFail, AddFriendOk, AuthFail, FriendOffline, FriendOnline,
     GiveGems, HeartbeatReply, JoinGrantHostClear, JumpToGame, PushAccepted, PushFriendReq,
     PushRemoved, RegisterFail, RegisterOk, RelayJoinReq, RelayPrivateMsg, RemoveFriendOk,

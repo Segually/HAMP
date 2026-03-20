@@ -1,20 +1,13 @@
 // main.rs — entry point.
 
-mod admin;
-mod config;
-mod db;
-mod friend_server;
-mod game_server;
-mod packet;
-mod packets_client;
-mod packets_server;
-mod state;
-mod structs;
+mod defs;
+mod server;
+mod utils;
 
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = config::load();
+    let cfg = utils::config::load();
     let args: Vec<String> = std::env::args().collect();
 
     let exe_dir = std::env::current_exe()?
@@ -22,14 +15,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("executable has no parent directory")?
         .to_owned();
 
-    let db = db::Db::open(
+    let db = utils::db::Db::open(
         exe_dir
             .join(&cfg.db_path)
             .to_str()
             .ok_or("db path is not valid UTF-8")?,
     )?;
 
-    let state = state::SharedState::new(db);
+    let state = defs::state::SharedState::new(db);
 
     println!("=== FRIEND SERVER ===");
     println!("  DB:          {}", cfg.db_path);
@@ -38,14 +31,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Terminal:    0.0.0.0:{}", cfg.terminal_port);
     }
 
-    // let gs_state = Arc::clone(&state);
-    // let gs_cfg   = cfg.clone();
-    // std::thread::spawn(move || game_server::run(&gs_cfg, gs_state));
-
     let t_state = Arc::clone(&state);
     let t_cfg = cfg.clone();
-    std::thread::spawn(move || admin::run_terminal(t_cfg, t_state));
+    std::thread::spawn(move || utils::admin::run_terminal(t_cfg, t_state));
 
-    friend_server::run(&cfg, state);
+    server::friend_server::run(&cfg, state);
     Ok(())
 }

@@ -15,8 +15,8 @@ use std::io::Cursor;
 
 use binrw::{BinRead, BinReaderExt};
 
-use crate::packet::{PacketHeader, Str16};
-use crate::structs::PacketId;
+use crate::defs::packet::{PacketHeader, Str16};
+use crate::defs::structs::PacketId;
 
 /// Every packet type a client can legitimately send to this server.
 ///

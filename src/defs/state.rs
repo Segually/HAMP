@@ -1,13 +1,13 @@
 // state.rs — shared runtime state and broadcast helpers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::db::Db;
-use crate::packet::{DEFAULT_WORLD, craft_batch, to_hex_upper};
-use crate::packet::{FriendOffline, FriendOnline, ServerPacket, Str16};
+use crate::utils::db::Db;
+use crate::defs::packet::{DEFAULT_WORLD, craft_batch, to_hex_upper};
+use crate::defs::packet::{FriendOffline, FriendOnline, ServerPacket, Str16};
 
 // ── Session connection ─────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ impl SessionConn {
     /// (or appends it to the sink buffer).
     pub fn send(&self, qid: u8, payload: &[u8], label: &str) {
         let batch = craft_batch(qid, payload);
-        println!("[{}] | {}", label, to_hex_upper(&batch));
+        println!("[{}] -> {} | {}", label, self.peer_ip(), to_hex_upper(&batch));
         match self {
             Self::Real { stream, .. } => {
                 if let Ok(mut s) = stream.lock() {

@@ -18,7 +18,7 @@ use std::io::Cursor;
 
 use binrw::{binwrite, BinWrite};
 
-use crate::packet::Str16;
+use crate::defs::packet::Str16;
 
 // ── ServerPacket trait ─────────────────────────────────────────────────────
 

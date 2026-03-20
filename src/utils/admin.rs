@@ -27,10 +27,10 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 
-use crate::config::Config;
-use crate::friend_server::handle_packet;
-use crate::packet::{craft_batch, to_hex_upper, ClientPacket, PushRemoved, ServerPacket, Str16};
-use crate::state::{SessionConn, SharedState};
+use crate::utils::config::Config;
+use crate::server::friend_server::handle_packet;
+use crate::defs::packet::{craft_batch, to_hex_upper, ClientPacket, PushRemoved, ServerPacket, Str16};
+use crate::defs::state::{SessionConn, SharedState};
 
 // ── Per-connection admin state ──────────────────────────────────────────────
 
