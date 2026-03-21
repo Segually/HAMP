@@ -153,7 +153,7 @@ pub fn handle_packet(
         ClientPacket::RegisterReq { username } => {
             if state.db.player_exists(&username) {
                 conn.send_pkt(
-                    &RegisterFail { reason: Str16::new("Taken") },
+                    &RegisterFail { name: Str16::new(&username) },
                     "S->C [REG_FAIL]",
                 );
             } else {
@@ -447,11 +447,46 @@ pub fn handle_packet(
                     // 2. Unfreeze the joiner.
                     tc.send_pkt(&JoinGrantHostClear, "S->C [JOINER_UI_UNFREEZE]");
 
-                    // 3. Spawn a relay session and redirect both players.
+                    // 3. Reuse existing relay session or spawn a new one.
                     let room = user.clone();
                     let ip   = if cfg.public_ip.is_empty() { &cfg.host } else { &cfg.public_ip };
 
-                    if let Some(port) = game_server::spawn_relay_session(room.clone(), cfg) {
+                    // Check if the host already has a live relay session.
+                    let existing_port = {
+                        let relays = state.active_relay_sessions.read().unwrap();
+                        relays.get(user).copied()
+                    };
+
+                    let port = if let Some(p) = existing_port {
+                        // Probe the port to make sure it's still alive.
+                        use std::net::TcpStream;
+                        match TcpStream::connect_timeout(
+                            &format!("127.0.0.1:{}", p).parse().unwrap(),
+                            std::time::Duration::from_secs(2),
+                        ) {
+                            Ok(_) => {
+                                println!("[FRIEND] Reusing existing relay session on port {}", p);
+                                Some(p)
+                            }
+                            Err(_) => {
+                                println!("[FRIEND] Stale relay session on port {}, spawning new", p);
+                                state.active_relay_sessions.write().unwrap().remove(user);
+                                let new_port = game_server::spawn_relay_session(room.clone(), cfg);
+                                if let Some(np) = new_port {
+                                    state.active_relay_sessions.write().unwrap().insert(user.clone(), np);
+                                }
+                                new_port
+                            }
+                        }
+                    } else {
+                        let new_port = game_server::spawn_relay_session(room.clone(), cfg);
+                        if let Some(np) = new_port {
+                            state.active_relay_sessions.write().unwrap().insert(user.clone(), np);
+                        }
+                        new_port
+                    };
+
+                    if let Some(port) = port {
                         let jump = JumpToGame {
                             display:       Str16::new(user),
                             token:         Str16::new(&room),
@@ -585,6 +620,7 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
             sessions.remove(user);
             drop(sessions);
             state.world_states.write().unwrap().remove(user);
+            state.active_relay_sessions.write().unwrap().remove(user);
             state.broadcast_status(user, false);
         } else {
             drop(sessions);

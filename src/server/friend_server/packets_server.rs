@@ -58,7 +58,7 @@ impl ServerPacket for RegisterOk { const ID: u8 = 0x0A; }
 #[bw(little)]
 pub struct RegisterFail {
     #[bw(calc = 0x02u8)] _status: u8,
-    pub reason: Str16,
+    pub name: Str16,
 }
 impl ServerPacket for RegisterFail { const ID: u8 = 0x0A; }
 

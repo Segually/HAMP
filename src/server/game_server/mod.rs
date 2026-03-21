@@ -59,6 +59,13 @@ pub(crate) struct Session {
     shutdown:    AtomicBool,
     /// The address the listener is bound to — used to unblock the accept loop on shutdown.
     listen_addr: Mutex<Option<std::net::SocketAddr>>,
+    /// The host player's username (relay mode only). The host client owns
+    /// the world data; chunk/container requests from guests are relayed to it.
+    host:        Mutex<Option<String>>,
+    /// Pending chunk requests: chunk_key → list of requesting player usernames.
+    pending_chunks:     Mutex<HashMap<String, Vec<String>>>,
+    /// Pending container requests: basket_id → list of requesting player usernames.
+    pending_containers: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl Session {
@@ -69,6 +76,9 @@ impl Session {
             players: Mutex::new(HashMap::new()),
             shutdown: AtomicBool::new(false),
             listen_addr: Mutex::new(None),
+            host: Mutex::new(None),
+            pending_chunks: Mutex::new(HashMap::new()),
+            pending_containers: Mutex::new(HashMap::new()),
         })
     }
 
@@ -233,28 +243,37 @@ fn build_player_nearby(username: &str, player_data_body: &[u8]) -> Vec<u8> {
 
 fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc<Session>) {
     let mut player_id: Option<String> = None;
-    let mut buf = [0u8; 65536];
+    let mut read_buf = [0u8; 65536];
+    let mut accum: Vec<u8> = Vec::new();
 
     println!("[GAME:'{}'] {} connected", session.room_token, addr);
 
-    loop {
+    'outer: loop {
         if session.shutdown.load(Ordering::Relaxed) { break; }
-        let n = match stream.read(&mut buf) {
+        let n = match stream.read(&mut read_buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
-        let data = &buf[..n];
+        accum.extend_from_slice(&read_buf[..n]);
 
-        if data.is_empty() { continue; }
+        // Consume complete framed packets from the accumulation buffer.
+        while !accum.is_empty() {
+            // Handshake probe: single 0x66 byte (no length prefix).
+            if accum[0] == 0x66 {
+                let _ = stream.write_all(&craft_batch(0, &[0x09, 0x01]));
+                accum.remove(0);
+                continue;
+            }
 
-        // Handshake probe: single 0x66 byte.
-        if data[0] == 0x66 {
-            let _ = stream.write_all(&craft_batch(0, &[0x09, 0x01]));
-            continue;
-        }
+            if accum.len() < 2 { break; }
+            let total_len = u16::from_le_bytes([accum[0], accum[1]]) as usize;
+            if accum.len() < total_len { break; } // wait for more data
 
-        if data.len() < 10 { continue; }
-        let pid = data[9];
+            let data: Vec<u8> = accum.drain(..total_len).collect();
+
+            if data.len() < 10 { continue; }
+            let pid = data[9];
+            let data = data.as_slice();
 
         match pid {
 
@@ -309,7 +328,48 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         .insert(uid.clone(), TrackedPlayer::new(&ws.default_zone));
                 }
 
-                println!("[GAME:'{}'] {} → player_id='{}'", world, addr, uid);
+                // In relay mode, the room_token is the host's username.
+                // First player whose name matches (case-insensitive) becomes host.
+                // If no match, first player in becomes host (fallback).
+                let is_host = match session.mode {
+                    SessionMode::Relay => {
+                        let mut host = session.host.lock().unwrap();
+                        if host.is_none() {
+                            if uid.eq_ignore_ascii_case(&world) {
+                                *host = Some(uid.clone());
+                                true
+                            } else {
+                                // Not the expected host — check if host slot is still empty
+                                // after a moment (first-come fallback)
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    SessionMode::Managed(_) => false,
+                };
+
+                // If no host was assigned yet and this isn't the expected host,
+                // assign first player as host if nobody else takes the slot.
+                if matches!(session.mode, SessionMode::Relay) && !is_host {
+                    let mut host = session.host.lock().unwrap();
+                    if host.is_none() {
+                        *host = Some(uid.clone());
+                        println!("[GAME:'{}'] Fallback host: '{}'", world, uid);
+                    }
+                }
+
+                let is_host_flag = session.host.lock().unwrap()
+                    .as_ref()
+                    .map(|h| h == &uid)
+                    .unwrap_or(false);
+
+                if is_host_flag {
+                    println!("[GAME:'{}'] {} → HOST player_id='{}'", world, addr, uid);
+                } else {
+                    println!("[GAME:'{}'] {} → GUEST player_id='{}'", world, addr, uid);
+                }
 
                 // 1. S→C 0x26: login response
                 let _ = stream.write_all(&craft_batch(2, &build_login_response(&world, &uid)));
@@ -317,8 +377,8 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 // 2. S→C 0x29: unique IDs
                 let _ = stream.write_all(&craft_batch(2, &build_unique_ids(16)));
 
-                // 3. S→C 0x02: join confirmed
-                let _ = stream.write_all(&craft_batch(2, &build_join_confirmed(&world, &uid, false)));
+                // 3. S→C 0x02: join confirmed (is_host=true for host, false for guests)
+                let _ = stream.write_all(&craft_batch(2, &build_join_confirmed(&world, &uid, is_host_flag)));
 
                 // 4. S→C 0x0B: zone data
                 let zone_name = match session.mode {
@@ -335,32 +395,50 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── PLAYER_DATA (0x03) ─────────────────────────────────────────
-            // Store initial_data; broadcast spawn to others after a short delay
-            // (matching Python's delayed_sync pattern).
+            // C→S body: pos(8) + zone(Str) + appearance(1) + rest
+            // Must transform to S→C 0x13 body (OnlinePlayerData):
+            //   pos(8) + target_pos(8) + rotation(8) + appearance(1) + zone(Str) + extra(Str) + rest
             0x03 => {
                 if let Some(ref uid) = player_id {
-                    let body = data[10..].to_vec();
+                    let raw = &data[10..];
+                    if raw.len() >= 8 {
+                        let mut off = 0usize;
+                        let pos_bytes = &raw[off..off + 8]; off += 8;
+                        let (zone_name, new_off) = unpack_string(raw, off); off = new_off;
+                        let appearance = if off < raw.len() { raw[off] } else { 0 }; off += 1;
+                        let rest = if off < raw.len() { &raw[off..] } else { &[] };
 
-                    // 1. Store this player's initial_data.
-                    if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
-                        *p.initial_data.lock().unwrap() = Some(body.clone());
-                    }
+                        // Build OnlinePlayerData blob
+                        let mut opd = Vec::new();
+                        opd.extend_from_slice(pos_bytes);                    // position
+                        opd.extend_from_slice(pos_bytes);                    // target (same)
+                        opd.extend_from_slice(&[0, 0, 0, 0, 0, 0, 100, 0]); // rotation: quat (0,0,0,100) as 4×i16 LE
+                        opd.push(appearance);
+                        opd.extend(pack_string(&zone_name));
+                        opd.extend(pack_string(""));                         // extra string
+                        opd.extend_from_slice(rest);
 
-                    // 2. Broadcast NEW_PLAYER_NEARBY (0x13 type=1) to all other players.
-                    session.broadcast(&build_player_nearby(uid, &body), Some(uid.as_str()));
+                        // 1. Store this player's initial_data (transformed).
+                        if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
+                            *p.initial_data.lock().unwrap() = Some(opd.clone());
+                        }
 
-                    // 3. Send all existing players' data to this newcomer as 0x13 type=1.
-                    let existing: Vec<(String, Vec<u8>)> = session.players.lock().unwrap()
-                        .iter()
-                        .filter(|(n, _)| n.as_str() != uid.as_str())
-                        .filter_map(|(n, p)| {
-                            p.initial_data.lock().unwrap()
-                                .as_ref()
-                                .map(|d| (n.clone(), d.clone()))
-                        })
-                        .collect();
-                    for (name, init) in existing {
-                        let _ = stream.write_all(&craft_batch(2, &build_player_nearby(&name, &init)));
+                        // 2. Broadcast NEW_PLAYER_NEARBY (0x13 type=1) to all other players.
+                        session.broadcast(&build_player_nearby(uid, &opd), Some(uid.as_str()));
+
+                        // 3. Send all existing players' data to this newcomer as 0x13 type=1.
+                        let existing: Vec<(String, Vec<u8>)> = session.players.lock().unwrap()
+                            .iter()
+                            .filter(|(n, _)| n.as_str() != uid.as_str())
+                            .filter_map(|(n, p)| {
+                                p.initial_data.lock().unwrap()
+                                    .as_ref()
+                                    .map(|d| (n.clone(), d.clone()))
+                            })
+                            .collect();
+                        for (name, init) in existing {
+                            let _ = stream.write_all(&craft_batch(2, &build_player_nearby(&name, &init)));
+                        }
                     }
                 }
             }
@@ -369,32 +447,245 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             // C→S: [zone_name: Str] [type: u8] [if type 2|3: packed_position]
             //
             // Zone data is already sent during login (0x26 handler).
-            // This handles zone change requests (e.g. entering a cave).
+            // This handles subsequent zone change requests (e.g. entering a cave).
             0x0A => {
-                let (zone_name, _) = unpack_string(data, 10);
-                let zone = if zone_name.is_empty() {
+                if let Some(ref uid) = player_id {
+                    let (zone_name, off) = unpack_string(data, 10);
+                    let zone_type = if data.len() > off { data[off] } else { 0 };
+
                     match session.mode {
-                        SessionMode::Managed(ref ws) => ws.default_zone.clone(),
-                        SessionMode::Relay => "overworld".to_string(),
+                        SessionMode::Managed(ref ws) => {
+                            let zone = if zone_name.is_empty() {
+                                ws.default_zone.clone()
+                            } else {
+                                zone_name
+                            };
+                            let _ = stream.write_all(&craft_batch(2, &build_zone_data(&zone)));
+                        }
+                        SessionMode::Relay => {
+                            let host = session.host.lock().unwrap().clone();
+                            let is_host = host.as_ref().map(|h| h == uid).unwrap_or(false);
+                            if is_host {
+                                // Host gets zone data directly.
+                                let zone = if zone_name.is_empty() { "overworld".to_string() } else { zone_name };
+                                let _ = stream.write_all(&craft_batch(2, &build_zone_data(&zone)));
+                            } else if let Some(ref hname) = host {
+                                // Guest → relay to host.
+                                let mut relay = vec![0x0Au8];
+                                relay.extend(pack_string(uid));
+                                relay.extend(pack_string(&zone_name));
+                                relay.push(zone_type);
+                                if data.len() > off + 1 {
+                                    relay.extend_from_slice(&data[off + 1..]);
+                                }
+                                session.send_to(hname, &relay);
+                            }
+                        }
                     }
-                } else {
-                    zone_name
-                };
-                let _ = stream.write_all(&craft_batch(2, &build_zone_data(&zone)));
+                }
             }
 
             // ── REQ_CHUNK (0x0C) ──────────────────────────────────────────
             0x0C => {
-                if let SessionMode::Managed(ref world) = session.mode {
-                    let (_zone_name, off) = unpack_string(data, 10);
+                if let Some(ref uid) = player_id {
+                    let (zone_name, off) = unpack_string(data, 10);
                     if data.len() >= off + 4 {
                         let x = i16::from_le_bytes([data[off], data[off + 1]]);
                         let z = i16::from_le_bytes([data[off + 2], data[off + 3]]);
-                        let wire = world.get_chunk_wire(x, z);
-                        let _ = stream.write_all(&craft_batch(2, &wire));
+
+                        match session.mode {
+                            SessionMode::Managed(ref world) => {
+                                let wire = world.get_chunk_wire(x, z);
+                                let _ = stream.write_all(&craft_batch(2, &wire));
+                            }
+                            SessionMode::Relay => {
+                                let host = session.host.lock().unwrap().clone();
+                                let is_host = host.as_ref().map(|h| h == uid).unwrap_or(false);
+                                if is_host {
+                                    // Host reads chunks locally (ShouldSaveLocally=true).
+                                    // This shouldn't normally happen.
+                                } else if host.is_some() {
+                                    // Guest → relay request to host.
+                                    // S→C 0x0C to host: String(requester) + String(zone) + Short(x) + Short(z)
+                                    let chunk_key = format!("{}_{}_{}",  zone_name, x, z);
+                                    session.pending_chunks.lock().unwrap()
+                                        .entry(chunk_key).or_default().push(uid.clone());
+
+                                    let mut relay = vec![0x0Cu8];
+                                    relay.extend(pack_string(uid));
+                                    relay.extend(pack_string(&zone_name));
+                                    relay.extend_from_slice(&x.to_le_bytes());
+                                    relay.extend_from_slice(&z.to_le_bytes());
+                                    session.send_to(host.as_ref().unwrap(), &relay);
+                                }
+                            }
+                        }
                     }
                 }
-                // Relay mode: ignore (host serves chunks directly).
+            }
+
+            // ── HOST CHUNK RESPONSE (0x0D) — relay mode only ─────────────
+            // The host's client sends: 0x0D + String(requester) + PackForWeb body + bandit data
+            // We strip the requester, wrap the PackForWeb body in the outer envelope
+            // the guest expects, and forward it.
+            0x0D if matches!(session.mode, SessionMode::Relay) => {
+                if let Some(ref uid) = player_id {
+                    let is_host = session.host.lock().unwrap()
+                        .as_ref().map(|h| h == uid).unwrap_or(false);
+                    if is_host {
+                        let (requester, off) = unpack_string(data, 10);
+                        let chunk_data = &data[off..];
+
+                        if chunk_data.len() >= 4 {
+                            // PackForWeb starts: Short(cx) + Short(cz) + String(zone) + ...
+                            let cx = i16::from_le_bytes([chunk_data[0], chunk_data[1]]);
+                            let cz = i16::from_le_bytes([chunk_data[2], chunk_data[3]]);
+                            let (zone_from_host, _) = unpack_string(chunk_data, 4);
+
+                            // Build outer wrapper the guest expects:
+                            // 0x0D + String(zone) + Short(cx) + Short(cz) + Byte(0=new) + String("")
+                            // + PackForWeb body + bandit data
+                            let mut out = vec![0x0Du8];
+                            out.extend(pack_string(&zone_from_host));
+                            out.extend_from_slice(&cx.to_le_bytes());
+                            out.extend_from_slice(&cz.to_le_bytes());
+                            out.push(0x00); // flag = 0 (new chunk)
+                            out.extend(pack_string("")); // checkpoint
+                            out.extend_from_slice(chunk_data); // PackForWeb body + bandit data
+
+                            // Route to whoever requested this chunk.
+                            let chunk_key = format!("{}_{}_{}",  zone_from_host, cx, cz);
+                            let targets = session.pending_chunks.lock().unwrap()
+                                .remove(&chunk_key)
+                                .unwrap_or_default();
+                            if targets.is_empty() {
+                                // Maybe requester name from the packet itself
+                                if !requester.is_empty() {
+                                    session.send_to(&requester, &out);
+                                }
+                            } else {
+                                for target in &targets {
+                                    session.send_to(target, &out);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── HOST ZONE RESPONSE (0x0B) — relay mode only ──────────────
+            // The host sends: 0x0B + String(requester) + String(zone) + Byte(type) + ...
+            // We transform to guest format: 0x0B + Byte(1) + Byte(0) + String(zone) + rest
+            0x0B if matches!(session.mode, SessionMode::Relay) => {
+                if let Some(ref uid) = player_id {
+                    let is_host = session.host.lock().unwrap()
+                        .as_ref().map(|h| h == uid).unwrap_or(false);
+                    if is_host {
+                        let (requester, off) = unpack_string(data, 10);
+                        let (zone_name, zoff) = unpack_string(data, off);
+                        if zoff < data.len() {
+                            let type_flag = data[zoff];
+                            // Skip optional position data if present
+                            let pos_skip = if (type_flag & 0xFE) == 2 { 12 } else { 0 };
+                            let zone_data_start = zoff + 1 + pos_skip;
+
+                            let mut out = vec![0x0Bu8, 0x01, 0x00]; // flag=1, sub=0
+                            out.extend(pack_string(&zone_name));
+                            if zone_data_start < data.len() {
+                                out.extend_from_slice(&data[zone_data_start..]);
+                            }
+
+                            if !requester.is_empty() {
+                                session.send_to(&requester, &out);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── REQ_CONTAINER (0x1A) ──────────────────────────────────────
+            // C→S: [validator:Str][basket_id:u32][type:u8][chunk:Str][shorts×4]
+            // Relay mode: forward to host as 0x1C + String(requester) + Long(basket_id)
+            0x1A => {
+                if let Some(ref uid) = player_id {
+                    let (_, off) = unpack_string(data, 10); // skip validator
+                    if data.len() >= off + 4 {
+                        let basket_id = u32::from_le_bytes([
+                            data[off], data[off+1], data[off+2], data[off+3]
+                        ]);
+
+                        if matches!(session.mode, SessionMode::Relay) {
+                            let host = session.host.lock().unwrap().clone();
+                            if let Some(ref hname) = host {
+                                let bk = basket_id.to_string();
+                                session.pending_containers.lock().unwrap()
+                                    .entry(bk).or_default().push(uid.clone());
+
+                                let mut relay = vec![0x1Cu8];
+                                relay.extend(pack_string(uid));
+                                relay.extend_from_slice(&basket_id.to_le_bytes());
+                                session.send_to(hname, &relay);
+                            }
+                        }
+                        // Managed mode: containers not yet implemented
+                    }
+                }
+            }
+
+            // ── HOST CONTAINER RESPONSE (0x1B) — relay mode only ─────────
+            // Host sends: 0x1B + String(requester) + Long(basket_id) + BasketContents
+            // Guest expects: 0x1B + Long(basket_id) + BasketContents
+            0x1B if matches!(session.mode, SessionMode::Relay) => {
+                if let Some(ref uid) = player_id {
+                    let is_host = session.host.lock().unwrap()
+                        .as_ref().map(|h| h == uid).unwrap_or(false);
+                    if is_host {
+                        let (_requester, off) = unpack_string(data, 10);
+                        if data.len() >= off + 4 {
+                            let basket_id = u32::from_le_bytes([
+                                data[off], data[off+1], data[off+2], data[off+3]
+                            ]);
+
+                            let mut out = vec![0x1Bu8];
+                            out.extend_from_slice(&data[off..]); // basket_id + contents
+
+                            let bk = basket_id.to_string();
+                            let targets = session.pending_containers.lock().unwrap()
+                                .remove(&bk)
+                                .unwrap_or_default();
+                            for target in &targets {
+                                session.send_to(target, &out);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── CLOSE_BASKET (0x1E) — relay to host in relay mode ────────
+            // C→S: [validator:Str][basket_id:u32][BasketContents][item_name:Str][chunk:Str][shorts×4]
+            // S→C: [basket_id:u32][BasketContents][item_name:Str] (broadcast)
+            0x1E => {
+                if let Some(ref uid) = player_id {
+                    let (_, off) = unpack_string(data, 10); // skip validator
+                    // Broadcast the close to other players (strip validator)
+                    let mut pkt = vec![0x1Eu8];
+                    pkt.extend_from_slice(&data[off..]);
+                    session.broadcast(&pkt, Some(uid.as_str()));
+
+                    // In relay mode, also forward save to host
+                    if matches!(session.mode, SessionMode::Relay) {
+                        let host = session.host.lock().unwrap().clone();
+                        if let Some(ref hname) = host {
+                            if uid != hname {
+                                // Send to host for persistence
+                                let mut relay = vec![0x1Eu8];
+                                relay.extend(pack_string(uid));
+                                relay.extend_from_slice(&data[off..]);
+                                session.send_to(hname, &relay);
+                            }
+                        }
+                    }
+                }
             }
 
             // ── POSITION (0x11) → relay as S→C 0x11 ─────────────────────
@@ -473,6 +764,25 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             0x14 => {
                 if let Some(ref uid) = player_id {
                     let (zone_name, _) = unpack_string(data, 10);
+
+                    // Update stored initial_data zone so late-joiners see the
+                    // correct zone.  Layout: pos(8)+pos(8)+rot(8)+appearance(1)+String(zone)+…
+                    if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
+                        let mut guard = p.initial_data.lock().unwrap();
+                        if let Some(ref od) = *guard {
+                            let z_off = 8 + 8 + 8 + 1; // 25
+                            if od.len() > z_off {
+                                let (_, after_zone) = unpack_string(od, z_off);
+                                let mut new_od = od[..z_off].to_vec();
+                                new_od.extend(pack_string(&zone_name));
+                                if after_zone < od.len() {
+                                    new_od.extend_from_slice(&od[after_zone..]);
+                                }
+                                *guard = Some(new_od);
+                            }
+                        }
+                    }
+
                     let mut pkt = vec![0x14u8];
                     pkt.extend(pack_string(uid));
                     pkt.extend(pack_string(&zone_name));
@@ -578,8 +888,38 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 }
             }
 
+            // ── END_TELEPORT (0x16) → update position + broadcast ─────────
+            // C→S: raw position Short×4 (8 bytes) at data[10..]
+            // S→C: String(username) + Short×4
+            0x16 => {
+                if let Some(ref uid) = player_id {
+                    // Update stored initial_data position so late-joiners see
+                    // the correct location.  Layout: pos(8)+pos(8)+rest…
+                    let new_pos = &data[10..];
+                    if new_pos.len() >= 8 {
+                        if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
+                            let mut guard = p.initial_data.lock().unwrap();
+                            if let Some(ref od) = *guard {
+                                if od.len() >= 16 {
+                                    let mut new_od = Vec::with_capacity(od.len());
+                                    new_od.extend_from_slice(&new_pos[..8]); // pos slot 1
+                                    new_od.extend_from_slice(&new_pos[..8]); // pos slot 2
+                                    new_od.extend_from_slice(&od[16..]);     // rest unchanged
+                                    *guard = Some(new_od);
+                                }
+                            }
+                        }
+                    }
+
+                    let mut pkt = vec![0x16u8];
+                    pkt.extend(pack_string(uid));
+                    pkt.extend_from_slice(&data[10..]);
+                    session.broadcast(&pkt, Some(uid.as_str()));
+                }
+            }
+
             // ── Bulk broadcast-relay: [pid][player_id][body] ──────────────
-            0x09 | 0x16 | 0x18 | 0x19 | 0x23 |
+            0x09 | 0x18 | 0x19 | 0x23 |
             0x4A | 0x4B | 0x4E | 0x4F | 0x50 |
             0x53 | 0x56 | 0x57 | 0x58 |
             0x59 | 0x5A => {
@@ -600,8 +940,9 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                     session.broadcast(&pkt, Some(uid.as_str()));
                 }
             }
-        }
-    }
+        } // match pid
+        } // while (frame loop)
+    } // 'outer loop
 
     // Disconnect cleanup: remove player and notify others via 0x13 type=gone + 0x07 leave.
     if let Some(ref uid) = player_id {

@@ -107,6 +107,9 @@ pub struct SharedState {
     pub world_states: RwLock<HashMap<String, Vec<u8>>>,
     /// Admin-spawned dummy worlds (managed game sessions with auto-accept).
     pub dummy_worlds: RwLock<HashMap<String, DummyWorld>>,
+    /// Maps host username → relay session port.  Used by JoinGrant to reuse an
+    /// existing relay session instead of spawning a new one every time.
+    pub active_relay_sessions: RwLock<HashMap<String, u16>>,
     /// The database — shared with every handler thread.
     pub db: Arc<Db>,
 }
@@ -114,9 +117,10 @@ pub struct SharedState {
 impl SharedState {
     pub fn new(db: Arc<Db>) -> Arc<Self> {
         Arc::new(Self {
-            sessions:     RwLock::new(HashMap::new()),
-            world_states: RwLock::new(HashMap::new()),
-            dummy_worlds: RwLock::new(HashMap::new()),
+            sessions:              RwLock::new(HashMap::new()),
+            world_states:          RwLock::new(HashMap::new()),
+            dummy_worlds:          RwLock::new(HashMap::new()),
+            active_relay_sessions: RwLock::new(HashMap::new()),
             db,
         })
     }
