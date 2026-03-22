@@ -81,6 +81,9 @@ struct GamePlayer {
     sink:         Mutex<TcpStream>,
     /// Last received PLAYER_DATA blob (C→S 0x03 body), replayed to players who join later.
     initial_data: Mutex<Option<Vec<u8>>>,
+    /// Current zone (e.g. "overworld", "cave_zone"). Used to filter visibility —
+    /// players only see other players in the same zone.
+    zone:         Mutex<String>,
 }
 
 // ── Session mode ──────────────────────────────────────────────────────────
@@ -155,6 +158,16 @@ impl Session {
         let batch = craft_batch(2, payload);
         for (name, p) in self.players.lock().unwrap().iter() {
             if exclude == Some(name.as_str()) { continue; }
+            let _ = p.sink.lock().unwrap().write_all(&batch);
+        }
+    }
+
+    /// Like `broadcast`, but only sends to players in the same zone.
+    fn broadcast_zone(&self, payload: &[u8], zone: &str, exclude: Option<&str>) {
+        let batch = craft_batch(2, payload);
+        for (name, p) in self.players.lock().unwrap().iter() {
+            if exclude == Some(name.as_str()) { continue; }
+            if *p.zone.lock().unwrap() != zone { continue; }
             let _ = p.sink.lock().unwrap().write_all(&batch);
         }
     }
@@ -362,6 +375,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 let player = Arc::new(GamePlayer {
                     sink:         Mutex::new(cloned),
                     initial_data: Mutex::new(None),
+                    zone:         Mutex::new("overworld".to_string()),
                 });
                 session.players.lock().unwrap().insert(uid.clone(), Arc::clone(&player));
                 player_id = Some(uid.clone());
@@ -440,6 +454,10 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             // C→S body: pos(8) + zone(Str) + appearance(1) + rest
             // Must transform to S→C 0x13 body (OnlinePlayerData):
             //   pos(8) + target_pos(8) + rotation(8) + appearance(1) + zone(Str) + extra(Str) + rest
+            //
+            // Player sync is delayed 2 seconds (matching Python) so both
+            // clients have time to finish loading the zone before receiving
+            // 0x13 NEW_PLAYER_NEARBY packets.
             0x03 => {
                 if let Some(ref uid) = player_id {
                     let raw = &data[10..];
@@ -460,27 +478,52 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         opd.extend(pack_string(""));                         // extra string
                         opd.extend_from_slice(rest);
 
-                        // 1. Store this player's initial_data (transformed).
+                        // Store initial_data + zone immediately.
                         if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
                             *p.initial_data.lock().unwrap() = Some(opd.clone());
+                            *p.zone.lock().unwrap() = zone_name.clone();
                         }
 
-                        // 2. Broadcast NEW_PLAYER_NEARBY (0x13 type=1) to all other players.
-                        session.broadcast(&build_player_nearby(uid, &opd), Some(uid.as_str()));
+                        // Delayed sync: wait 2s then broadcast + reciprocal sync.
+                        let sess = Arc::clone(&session);
+                        let uid_owned = uid.clone();
+                        let opd_owned = opd;
+                        let zone_owned = zone_name.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
 
-                        // 3. Send all existing players' data to this newcomer as 0x13 type=1.
-                        let existing: Vec<(String, Vec<u8>)> = session.players.lock().unwrap()
-                            .iter()
-                            .filter(|(n, _)| n.as_str() != uid.as_str())
-                            .filter_map(|(n, p)| {
-                                p.initial_data.lock().unwrap()
-                                    .as_ref()
-                                    .map(|d| (n.clone(), d.clone()))
-                            })
-                            .collect();
-                        for (name, init) in existing {
-                            let _ = stream.write_all(&craft_batch(2, &build_player_nearby(&name, &init)));
-                        }
+                            // 1. Broadcast this player to everyone in the same zone.
+                            let spawn_pkt = build_player_nearby(&uid_owned, &opd_owned);
+                            sess.broadcast_zone(&spawn_pkt, &zone_owned, Some(uid_owned.as_str()));
+
+                            // 2. Send existing same-zone players' data to this newcomer.
+                            let existing: Vec<(String, Vec<u8>)> = sess.players.lock().unwrap()
+                                .iter()
+                                .filter(|(n, _)| n.as_str() != uid_owned.as_str())
+                                .filter(|(_, p)| *p.zone.lock().unwrap() == zone_owned)
+                                .filter_map(|(n, p)| {
+                                    p.initial_data.lock().unwrap()
+                                        .as_ref()
+                                        .map(|d| (n.clone(), d.clone()))
+                                })
+                                .collect();
+                            for (name, init) in &existing {
+                                sess.send_to(&uid_owned, &build_player_nearby(name, init));
+                            }
+
+                            // 3. In relay mode, explicitly notify the host about
+                            //    this guest so the host's client spawns them.
+                            if matches!(sess.mode, SessionMode::Relay) {
+                                let host = sess.host.lock().unwrap().clone();
+                                if let Some(ref hname) = host {
+                                    if uid_owned != *hname {
+                                        sess.send_to(hname, &spawn_pkt);
+                                        println!("[GAME:'{}'] Synced guest '{}' to host '{}'",
+                                                 sess.room_token, uid_owned, hname);
+                                    }
+                                }
+                            }
+                        });
                     }
                 }
             }
@@ -544,8 +587,11 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                 let host = session.host.lock().unwrap().clone();
                                 let is_host = host.as_ref().map(|h| h == uid).unwrap_or(false);
                                 if is_host {
-                                    // Host reads chunks locally (ShouldSaveLocally=true).
-                                    // This shouldn't normally happen.
+                                    // Host reads chunks locally (ShouldSaveLocally=true),
+                                    // but the client still sends 0x0C to the server.
+                                    // Send back an empty chunk so it doesn't stall.
+                                    let empty = world_state::Chunk::blank(x, z, &zone_name).to_wire();
+                                    let _ = stream.write_all(&craft_batch(2, &empty));
                                 } else if host.is_some() {
                                     // Guest → relay request to host.
                                     // S→C 0x0C to host: String(requester) + String(zone) + Short(x) + Short(z)
@@ -773,10 +819,14 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         }
                     }
 
+                    let player_zone = session.players.lock().unwrap()
+                        .get(uid.as_str())
+                        .map(|p| p.zone.lock().unwrap().clone())
+                        .unwrap_or_default();
                     let mut pkt = vec![0x11u8];
                     pkt.extend(pack_string(uid));
                     pkt.extend_from_slice(&data[10..]);
-                    session.broadcast(&pkt, Some(uid.as_str()));
+                    session.broadcast_zone(&pkt, &player_zone, Some(uid.as_str()));
                 }
             }
 
@@ -816,13 +866,34 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── ZONE_CHANGE (0x14) → broadcast zone change ─────────────────
+            // When a player moves between zones:
+            //   1. Send "player gone" (0x13 type=0) to players in the OLD zone
+            //   2. Update the player's zone
+            //   3. Broadcast zone change to everyone
+            //   4. Send "player nearby" (0x13 type=1) to players in the NEW zone
             0x14 => {
                 if let Some(ref uid) = player_id {
                     let (zone_name, _) = unpack_string(data, 10);
 
-                    // Update stored initial_data zone so late-joiners see the
-                    // correct zone.  Layout: pos(8)+pos(8)+rot(8)+appearance(1)+String(zone)+…
+                    // Get old zone and current initial_data.
+                    let old_zone = session.players.lock().unwrap()
+                        .get(uid.as_str())
+                        .map(|p| p.zone.lock().unwrap().clone())
+                        .unwrap_or_default();
+
+                    // Send "gone" to old zone players.
+                    if old_zone != zone_name {
+                        session.broadcast_zone(
+                            &build_player_gone(uid), &old_zone, Some(uid.as_str()));
+                    }
+
+                    // Update stored initial_data zone + player zone field.
                     if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
+                        // Update zone tracker.
+                        *p.zone.lock().unwrap() = zone_name.clone();
+
+                        // Update initial_data blob.
+                        // Layout: pos(8)+pos(8)+rot(8)+appearance(1)+String(zone)+…
                         let mut guard = p.initial_data.lock().unwrap();
                         if let Some(ref od) = *guard {
                             let z_off = 8 + 8 + 8 + 1; // 25
@@ -838,10 +909,24 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         }
                     }
 
+                    // Broadcast zone change to everyone (the client uses this
+                    // for its own tracking regardless of visibility).
                     let mut pkt = vec![0x14u8];
                     pkt.extend(pack_string(uid));
                     pkt.extend(pack_string(&zone_name));
                     session.broadcast(&pkt, Some(uid.as_str()));
+
+                    // Send "nearby" to new zone players so they see this player.
+                    if old_zone != zone_name {
+                        let init = session.players.lock().unwrap()
+                            .get(uid.as_str())
+                            .and_then(|p| p.initial_data.lock().unwrap().clone());
+                        if let Some(init) = init {
+                            session.broadcast_zone(
+                                &build_player_nearby(uid, &init),
+                                &zone_name, Some(uid.as_str()));
+                        }
+                    }
                 }
             }
 
