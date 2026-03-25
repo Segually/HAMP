@@ -10,7 +10,7 @@
 
 use std::io::Cursor;
 
-use binrw::{binrw, BinRead, BinWrite};
+use binrw::binrw;
 
 // ── Constants ──────────────────────────────────────────────────────────────
 

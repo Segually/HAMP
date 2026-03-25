@@ -32,7 +32,7 @@ use base64::Engine as _;
 use crate::utils::config::Config;
 use crate::server::friend_server::handle_packet;
 use crate::server::friend_server::packets_client::ClientPacket;
-use crate::server::friend_server::packets_server::{PushRemoved, ServerPacket};
+use crate::server::friend_server::packets_server::PushRemoved;
 use crate::defs::packet::{craft_batch, to_hex_upper, Str16};
 use crate::defs::state::{SessionConn, SharedState};
 

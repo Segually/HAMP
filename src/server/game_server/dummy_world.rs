@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::defs::packet::{Str16, DEFAULT_WORLD};
 use crate::defs::state::{SessionConn, SharedState};
-use crate::server::friend_server::packets_server::{JoinGrantHostClear, JumpToGame, ServerPacket};
+use crate::server::friend_server::packets_server::{JoinGrantHostClear, JumpToGame};
 use super::{Session, world_state::WorldState};
 use crate::utils::config::Config;
 
@@ -27,6 +27,7 @@ pub struct DummyWorld {
     /// The game server port this world is listening on.
     pub port: u16,
     /// The world state backing the managed session.
+    #[allow(dead_code)]
     pub world: Arc<WorldState>,
     /// Handle to the game session — used to shut it down.
     pub session: Arc<Session>,

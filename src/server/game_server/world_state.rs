@@ -26,6 +26,7 @@ use crate::defs::packet::pack_string;
 /// World coordinates: x = chunk_x * 10 + local_x / 10, z = chunk_z * 10 + local_z / 10.
 /// Y is not transmitted (always 0 on the base path).
 #[derive(Clone, Copy, Default, Debug)]
+#[allow(dead_code)]
 pub struct WorldPosition {
     pub chunk_x: i16,
     pub chunk_z: i16,
@@ -36,6 +37,7 @@ pub struct WorldPosition {
 /// Quaternion rotation scaled ×100 as 4 × i16.
 /// Identity = (0, 0, 0, 100).
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct WorldRotation {
     pub qx: i16,
     pub qy: i16,
@@ -155,6 +157,7 @@ impl Chunk {
 // ── Tracked player state ──────────────────────────────────────────────────
 
 /// Server-side state for a player inside a managed world.
+#[allow(dead_code)]
 pub struct TrackedPlayer {
     pub position: WorldPosition,
     pub target: WorldPosition,
@@ -176,6 +179,7 @@ impl TrackedPlayer {
 // ── World state ───────────────────────────────────────────────────────────
 
 /// Complete state for a single managed world.
+#[allow(dead_code)]
 pub struct WorldState {
     pub name: String,
     pub default_zone: String,

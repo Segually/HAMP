@@ -300,6 +300,7 @@ impl ServerPacket for ShowPopup { const ID: u8 = 0x2E; }
 #[binwrite]
 #[derive(Debug)]
 #[bw(little)]
+#[allow(dead_code)]
 pub struct ShowWarning {
     pub code: u8,
 }
@@ -314,6 +315,7 @@ impl ServerPacket for ShowWarning { const ID: u8 = 0x2F; }
 #[binwrite]
 #[derive(Debug)]
 #[bw(little)]
+#[allow(dead_code)]
 pub struct GiveGems {
     pub amount: i16,
 }

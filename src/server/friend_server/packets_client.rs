@@ -83,6 +83,7 @@ pub enum ClientPacket {
     JoinReq {
         target:     String,
         /// Purpose not fully reversed; relayed verbatim to the host.
+        #[allow(dead_code)]
         extra_byte: u8,
     },
 

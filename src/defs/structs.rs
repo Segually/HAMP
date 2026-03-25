@@ -97,6 +97,7 @@ impl PacketId {
 
 /// A single player-report entry, appended to `reports.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct Report {
     pub timestamp: String,
     pub reporter:  String,
