@@ -1058,13 +1058,134 @@ named player. See [position_rotation.md](position_rotation.md).
 
 ## Server implementation status (HAMP)
 
-The HAMP server currently implements handling for:
-- **Auth:** 0x26 login, 0x02 login success, 0x05 fully-in-game
-- **Movement:** 0x11 position relay
-- **World:** 0x0A zone request, 0x0B zone assignment, 0x0C/0x0D chunk req/data
-- **Players:** 0x13 nearby player updates
-- **Connection:** 0x01/0x0F heartbeat
+### Connection & Auth
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x01 | Ping | echo | echo | |
+| 0x0F | Heartbeat | echo | echo | |
+| 0x26 | Login | full | full | S→C 0x26+0x29+0x02+0x0B+0x17+0x07 |
 
-Packets not yet handled are relayed as-is in dummy world (P2P) mode or
-silently dropped in managed server mode. See CLAUDE.md for session type
-differences.
+### Player sync
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x03 | Initial Player Data | full | full | Transformed to OnlinePlayerData for 0x13 |
+| 0x11 | Position Update | zone-broadcast | zone-broadcast + tracking | Prefixed with player name |
+| 0x13 | Player Update | generated | generated | Built from 0x03 data on join/leave |
+| 0x14 | Change Zone | full | — | Gone/nearby sync across zones |
+| 0x15 | Teleport Start | zone-broadcast | zone-broadcast | |
+| 0x16 | Teleport End | broadcast | broadcast | Updates stored position |
+
+### World & chunks
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x0A | Request Zone Data | relay to host | serve | |
+| 0x0B | Zone Assignment | relay from host | serve | Host→guest transform |
+| 0x0C | Request Chunk | relay to host | serve | |
+| 0x0D | Chunk Data | relay from host | serve | Host→guest transform |
+
+### Containers
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x1A | Request Container | relay to host (0x1C) | — | |
+| 0x1B | Container Response | relay from host | — | |
+| 0x1E | Close Basket | broadcast + host save | — | Strips trailing chunk data |
+
+### Construction
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x20 | Build Furniture | broadcast | broadcast | Strip validator |
+| 0x21 | Remove Object | broadcast | broadcast | Strip validator |
+| 0x22 | Replace Buildable | broadcast | broadcast | Strip validator |
+| 0x23 | Land Claim User | broadcast | broadcast | Player-prefixed |
+| 0x27 | Claim Object | relay to host | — | |
+| 0x28 | Release Interacting | relay to host | — | |
+| 0x29 | Request Unique IDs | respond | respond | Server generates IDs |
+
+### Combat
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x09 | Guard Die | broadcast | broadcast | No prefix, as-is relay |
+| 0x3F | Try Claim Mobs | relay to host | — | |
+| 0x40 | Deload Mob | broadcast | broadcast | Player-prefixed |
+| 0x41 | Mob Positions | broadcast | broadcast | Player-prefixed |
+| 0x45 | Mob Respawn | host-only broadcast | broadcast | Host-originated S→C |
+| 0x46 | Attack Anim | zone-broadcast | zone-broadcast | No validator |
+| 0x47 | Hit Mob | broadcast | broadcast | Strip validator |
+| 0x48 | Mob Die | broadcast | broadcast | Strip validator |
+| 0x4B | Increase HP | broadcast | broadcast | Strip validator |
+| 0x4C | Show Exp Receive | zone-broadcast | zone-broadcast | No prefix |
+| 0x56 | Respawn | broadcast | broadcast | Player-prefixed |
+
+### Perks
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x51 | Apply Perk | broadcast | broadcast | Strip validator |
+| 0x52 | Launch Projectile | broadcast | broadcast | Strip validator |
+| 0x53 | Quick Tag | broadcast | broadcast | Strip validator |
+| 0x54 | All Pre Perks | broadcast | broadcast | Strip validator |
+| 0x55 | Create Perk Drop | broadcast | broadcast | Strip validator |
+
+### Companions
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x08 | Companion Death Chat | host-only broadcast | broadcast | Host-originated S→C |
+| 0x18 | Equipment Change | zone-broadcast | zone-broadcast | Player-prefixed |
+| 0x19 | Creature Change | zone-broadcast | zone-broadcast | Player-prefixed |
+| 0x4E | Companion Equip | zone-broadcast | zone-broadcast | Player-prefixed |
+| 0x4F | Rename Companion | zone-broadcast | zone-broadcast | Player-prefixed |
+| 0x50 | Destroy Companion | zone-broadcast | zone-broadcast | Player-prefixed |
+| 0x57 | Return to Breeder | broadcast | broadcast | Player-prefixed |
+| 0x58 | Update Synced Targets | broadcast | broadcast | Player-prefixed |
+| 0x59 | Created Local Mob | broadcast | broadcast | Player-prefixed |
+| 0x5A | Bandit Flag Destroyed | broadcast | broadcast | Player-prefixed |
+
+### Teleporters
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x2E | Req Tele Page | relay to host | — | |
+| 0x2F | Tele Page Data | host→guest P2P | — | |
+| 0x30 | Tele Screenshot Upload | broadcast | broadcast | |
+| 0x31 | Req Tele Screenshot | relay to host | — | |
+| 0x32 | Tele Screenshot Resp | host→guest P2P | — | |
+| 0x33 | Finished Editing Tele | broadcast | broadcast | |
+| 0x34 | New Tele Search | relay to host | — | |
+
+### Minigames
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x35 | Challenge Minigame | P2P to target | P2P | Swaps sender name |
+| 0x36 | Minigame Response | P2P to challenger | P2P | Swaps responder name |
+| 0x37 | Begin Minigame | P2P to owner | P2P | |
+| 0x38 | Exit Minigame | broadcast | broadcast | Player-prefixed |
+| 0x39 | Pool Cue Position | broadcast | broadcast | Player-prefixed |
+| 0x3A | Pool Shoot | broadcast | broadcast | Player-prefixed |
+| 0x3B | Pool Sync Ready | broadcast | broadcast | Player-prefixed |
+| 0x3C | Pool Place White | broadcast | broadcast | Player-prefixed |
+| 0x3D | Pool Play Again | broadcast | broadcast | Player-prefixed |
+
+### Social / Interaction
+| ID | Name | Relay | Managed | Notes |
+|----|------|-------|---------|-------|
+| 0x06 | Game Chat | broadcast | broadcast | Builds full S→C format |
+| 0x07 | Join/Leave Notif | generated | generated | On connect/disconnect |
+| 0x24 | Land Claim Timer | host-only broadcast | broadcast | Host-originated S→C |
+| 0x25 | Zone Data Refresh | host-only broadcast | broadcast | Host-originated S→C |
+| 0x2A | Sync Complete | echo + broadcast | echo + broadcast | |
+| 0x2B | (Join relay) | P2P to target | P2P | See note below |
+| 0x2D | (Join relay) | P2P to target | P2P | See note below |
+| 0x3E | Sit In Chair | zone-broadcast | zone-broadcast | Player-prefixed |
+| 0x42 | Mob Data Request | P2P to target | P2P | |
+| 0x43 | Mob Data Response | P2P to target | P2P | |
+
+### Unhandled (fall through to default)
+Any packet ID not listed above is relayed with a player name prefix via
+the default `_` arm. This works for simple relay packets but may cause
+issues for packets with validators or special S→C formats.
+
+### Known ID conflicts
+- **0x2B**: Docs say "Used Unique ID" (i32 payload) but server uses as
+  join relay (reads target string). May serve dual purpose or be
+  undocumented in GameServerSender.
+- **0x2D**: Docs say "Music Box Note Press" (4 bytes) but server uses as
+  "ASK_JOIN" relay (reads target string). Existing tested behavior —
+  possibly a different code path not captured in Ghidra analysis.

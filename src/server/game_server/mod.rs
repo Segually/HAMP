@@ -451,9 +451,16 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── PLAYER_DATA (0x03) ─────────────────────────────────────────
-            // C→S body: pos(8) + zone(Str) + appearance(1) + rest
-            // Must transform to S→C 0x13 body (OnlinePlayerData):
-            //   pos(8) + target_pos(8) + rotation(8) + appearance(1) + zone(Str) + extra(Str) + rest
+            // C→S 0x03 (SendInitialPlayerData):
+            //   Pos(8) + Str(zone) + u8(body_slot) + i32(level) + Item×3
+            //   + i32(hp_max) + i32(hp) + i32(hp_regen) + i16(creature_count)
+            //   + creature_count × Str(name) + [host-only trailing data]
+            //
+            // Must transform to OnlinePlayerData for S→C 0x13 type=1:
+            //   Pos(at) + Pos(to) + Rot(rot) + u8(is_dead)
+            //   + Str(currently_using) + Str(sitting_in_chair)
+            //   + i32(level) + Item×3 + i32(hp_max) + i32(hp) + i32(hp_regen)
+            //   + i16(creature_count) + creature_count × Str(name)
             //
             // Player sync is delayed 2 seconds (matching Python) so both
             // clients have time to finish loading the zone before receiving
@@ -465,18 +472,24 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         let mut off = 0usize;
                         let pos_bytes = &raw[off..off + 8]; off += 8;
                         let (zone_name, new_off) = unpack_string(raw, off); off = new_off;
-                        let appearance = if off < raw.len() { raw[off] } else { 0 }; off += 1;
+                        let body_slot = if off < raw.len() { raw[off] } else { 0 }; off += 1;
+
                         let rest = if off < raw.len() { &raw[off..] } else { &[] };
 
-                        // Build OnlinePlayerData blob
+                        // Build OnlinePlayerData blob.
+                        // OPD: at(8) + to(8) + rot(8) + is_dead(1) + Str(currently_using)
+                        //      + Str(sitting_in_chair) + level + items×3 + hp stats + creatures
+                        // `rest` = level + items + hp + creatures + host-only trailing data.
+                        // The trailing host-only data is harmless — the client stops
+                        // reading after creature names and ignores extra bytes.
                         let mut opd = Vec::new();
-                        opd.extend_from_slice(pos_bytes);                    // position
-                        opd.extend_from_slice(pos_bytes);                    // target (same)
-                        opd.extend_from_slice(&[0, 0, 0, 0, 0, 0, 100, 0]); // rotation: quat (0,0,0,100) as 4×i16 LE
-                        opd.push(appearance);
-                        opd.extend(pack_string(&zone_name));
-                        opd.extend(pack_string(""));                         // extra string
-                        opd.extend_from_slice(rest);
+                        opd.extend_from_slice(pos_bytes);                    // at position
+                        opd.extend_from_slice(pos_bytes);                    // to position (same)
+                        opd.extend_from_slice(&[0, 0, 0, 0, 0, 0, 100, 0]); // rotation: identity quat
+                        opd.push(body_slot);                                 // is_dead
+                        opd.extend(pack_string(""));                         // currently_using
+                        opd.extend(pack_string(""));                         // sitting_in_chair
+                        opd.extend_from_slice(rest);                         // level + items + hp + creatures
 
                         // Store initial_data + zone immediately.
                         if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
@@ -891,26 +904,11 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             &build_player_gone(uid), &old_zone, Some(uid.as_str()));
                     }
 
-                    // Update stored initial_data zone + player zone field.
+                    // Update player zone tracker.
+                    // (Zone is NOT part of the OnlinePlayerData blob — it's
+                    // tracked separately and used for broadcast_zone filtering.)
                     if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
-                        // Update zone tracker.
                         *p.zone.lock().unwrap() = zone_name.clone();
-
-                        // Update initial_data blob.
-                        // Layout: pos(8)+pos(8)+rot(8)+appearance(1)+String(zone)+…
-                        let mut guard = p.initial_data.lock().unwrap();
-                        if let Some(ref od) = *guard {
-                            let z_off = 8 + 8 + 8 + 1; // 25
-                            if od.len() > z_off {
-                                let (_, after_zone) = unpack_string(od, z_off);
-                                let mut new_od = od[..z_off].to_vec();
-                                new_od.extend(pack_string(&zone_name));
-                                if after_zone < od.len() {
-                                    new_od.extend_from_slice(&od[after_zone..]);
-                                }
-                                *guard = Some(new_od);
-                            }
-                        }
                     }
 
                     // Broadcast zone change to everyone (the client uses this
