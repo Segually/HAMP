@@ -137,9 +137,9 @@ pub enum GameClientPacket {
     },
 
     /// 0x1A — open/request a container.
-    /// C→S: [Str(validator)][u32(basket_id)][u8(type)][Str(chunk)][i16×4]
+    /// C→S: [Str(validator)][i64(basket_id)][u8(type)][Str(chunk)][i16×4]
     ContainerOpen {
-        basket_id: u32,
+        basket_id: i64,
     },
 
     /// 0x1E — close basket with updated contents.
@@ -217,10 +217,10 @@ pub enum GameClientPacket {
     },
 
     /// 0x1B (relay host) — container contents response.
-    /// Host C→S: [Str(requester)][u32(basket_id)][BasketContents]
+    /// Host C→S: [Str(requester)][i64(basket_id)][BasketContents]
     HostContainerResponse {
         requester: String,
-        basket_id: u32,
+        basket_id: i64,
         body:      Vec<u8>,
     },
 
@@ -331,24 +331,25 @@ impl GameClientPacket {
             }
 
             // ── 0x1A CONTAINER_OPEN ──────────────────────────────────────
-            // C→S: [Str(validator)][u32(basket_id)][...]
+            // C→S: [Str(validator)][i64(basket_id)][...]
             0x1A => {
                 let (_, off) = unpack_string(data, 10);
-                if data.len() < off + 4 {
+                if data.len() < off + 8 {
                     return Some(Self::Relay { id, payload: data[10..].to_vec() });
                 }
-                let basket_id = u32::from_le_bytes([
+                let basket_id = i64::from_le_bytes([
                     data[off], data[off+1], data[off+2], data[off+3],
+                    data[off+4], data[off+5], data[off+6], data[off+7],
                 ]);
                 Some(Self::ContainerOpen { basket_id })
             }
 
             // ── 0x1E BASKET_UPDATE ───────────────────────────────────────
-            // C→S: [Str(validator)][u32(basket_id)][BasketContents][Str(item)][trailing...]
+            // C→S: [Str(validator)][i64(basket_id)][BasketContents][Str(item)][trailing...]
             0x1E => {
                 let (_, off) = unpack_string(data, 10);
                 let basket_start     = off;
-                let after_basket_id  = off + 4;
+                let after_basket_id  = off + 8;
                 let after_contents   = skip_basket_contents(data, after_basket_id);
                 let (_, after_item)  = unpack_string(data, after_contents);
                 let basket_payload   = data[basket_start..after_item.min(data.len())].to_vec();
@@ -427,14 +428,15 @@ impl GameClientPacket {
             }
 
             // ── 0x1B HOST_CONTAINER_RESPONSE (relay mode) ────────────────
-            // Host C→S: [Str(requester)][u32(basket_id)][BasketContents]
+            // Host C→S: [Str(requester)][i64(basket_id)][BasketContents]
             0x1B => {
                 let (requester, off) = unpack_string(data, 10);
-                if data.len() < off + 4 {
+                if data.len() < off + 8 {
                     return Some(Self::Relay { id, payload: data[10..].to_vec() });
                 }
-                let basket_id = u32::from_le_bytes([
+                let basket_id = i64::from_le_bytes([
                     data[off], data[off+1], data[off+2], data[off+3],
+                    data[off+4], data[off+5], data[off+6], data[off+7],
                 ]);
                 Some(Self::HostContainerResponse {
                     requester,

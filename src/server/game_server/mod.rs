@@ -573,7 +573,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── REQ_CONTAINER (0x1A) ──────────────────────────────────────
-            // C→S: [validator:Str][basket_id:u32][type:u8][chunk:Str][shorts×4]
+            // C→S: [validator:Str][basket_id:i64][type:u8][chunk:Str][shorts×4]
             // Relay mode: forward to host as 0x1C + String(requester) + Long(basket_id)
             //
             // The host client also sends 0x1A when opening its own containers
@@ -582,9 +582,10 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             0x1A => {
                 if let Some(ref uid) = player_id {
                     let (_, off) = unpack_string(data, 10); // skip validator
-                    if data.len() >= off + 4 {
-                        let basket_id = u32::from_le_bytes([
-                            data[off], data[off+1], data[off+2], data[off+3]
+                    if data.len() >= off + 8 {
+                        let basket_id = i64::from_le_bytes([
+                            data[off], data[off+1], data[off+2], data[off+3],
+                            data[off+4], data[off+5], data[off+6], data[off+7],
                         ]);
 
                         if matches!(session.mode, SessionMode::Relay) {
@@ -616,9 +617,10 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         .as_ref().map(|h| h == uid).unwrap_or(false);
                     if is_host {
                         let (_requester, off) = unpack_string(data, 10);
-                        if data.len() >= off + 4 {
-                            let basket_id = u32::from_le_bytes([
-                                data[off], data[off+1], data[off+2], data[off+3]
+                        if data.len() >= off + 8 {
+                            let basket_id = i64::from_le_bytes([
+                                data[off], data[off+1], data[off+2], data[off+3],
+                                data[off+4], data[off+5], data[off+6], data[off+7],
                             ]);
 
                             let mut out = vec![0x1Bu8];
@@ -637,14 +639,14 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── CLOSE_BASKET (0x1E) — relay to host in relay mode ────────
-            // C→S: [validator:Str][basket_id:u32][BasketContents][item_name:Str][chunk:Str][shorts×4]
-            // S→C: [basket_id:u32][BasketContents][item_name:Str] (broadcast, no trailing chunk/shorts)
+            // C→S: [validator:Str][basket_id:i64][BasketContents][item_name:Str][chunk:Str][shorts×4]
+            // S→C: [basket_id:i64][BasketContents][item_name:Str] (broadcast, no trailing chunk/shorts)
             0x1E => {
                 if let Some(ref uid) = player_id {
                     let (_, off) = unpack_string(data, 10); // skip validator
                     // Parse through to find where item_name ends (exclude trailing chunk+shorts)
                     let basket_start = off;
-                    let after_basket_id = off + 4;
+                    let after_basket_id = off + 8;
                     let after_contents = skip_basket_contents(data, after_basket_id);
                     let (_item_name, after_item_name) = unpack_string(data, after_contents);
 

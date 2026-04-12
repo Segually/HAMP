@@ -357,11 +357,11 @@ impl ServerPacket for ZoneForGuest<'_> {
 
 // ── 0x1C CONTAINER_RELAY_TO_HOST ─────────────────────────────────────────
 //
-// S→C (host receives): [0x1C][Str(requester)][u32(basket_id)]
+// S→C (host receives): [0x1C][Str(requester)][i64(basket_id)]
 
 pub struct ContainerRelayToHost<'a> {
     pub requester: &'a str,
-    pub basket_id: u32,
+    pub basket_id: i64,
 }
 impl ServerPacket for ContainerRelayToHost<'_> {
     fn to_payload(&self) -> Vec<u8> {
@@ -374,7 +374,7 @@ impl ServerPacket for ContainerRelayToHost<'_> {
 
 // ── 0x1B CONTAINER_CONTENTS ───────────────────────────────────────────────
 //
-// S→C: [0x1B][u32(basket_id)][BasketContents]
+// S→C: [0x1B][i64(basket_id)][BasketContents]
 // `body` starts with basket_id bytes (host sends basket_id + contents together).
 
 pub struct ContainerContents<'a> {
