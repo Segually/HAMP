@@ -46,6 +46,29 @@ pub struct RegisteredServer {
     /// identify the session.
     pub room_token:  String,
     pub n_online:    i16,
+    /// Raw PNG bytes served in response to S→C 0x1F icon requests.
+    /// `None` → client receives has_icon=0 and shows its default icon.
+    pub icon_bytes:  Option<Vec<u8>>,
+}
+
+impl RegisteredServer {
+    /// Serialize this entry into the bytes the game expects inside a 0x1D
+    /// server-list packet:
+    ///   Str16(name) Str16(desc1) Str16(desc2) Str16(desc3) Str16(desc4)
+    ///   i16(n_online) i16(max_players) Str16(game_mode)
+    pub fn to_packet_entry(&self) -> Vec<u8> {
+        use crate::defs::packet::pack_string;
+        let mut b = Vec::new();
+        b.extend(pack_string(&self.name));
+        b.extend(pack_string(&self.desc1));
+        b.extend(pack_string(&self.desc2));
+        b.extend(pack_string(&self.desc3));
+        b.extend(pack_string(&self.desc4));
+        b.extend_from_slice(&self.n_online.to_le_bytes());
+        b.extend_from_slice(&self.max_players.to_le_bytes());
+        b.extend(pack_string(&self.game_mode));
+        b
+    }
 }
 
 // ── Internal wire helpers ──────────────────────────────────────────────────
@@ -122,7 +145,8 @@ fn handle_connection(
         public_ip,
         port,
         room_token,
-        n_online: 0,
+        n_online:   0,
+        icon_bytes: None, // icon served from icons_dir on the friend server
     };
 
     list.write().unwrap().push(server);

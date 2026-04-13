@@ -47,6 +47,11 @@ pub struct Config {
     /// Path to the SQLite database file.  Relative paths are resolved from
     /// the working directory where the server binary is run.
     pub db_path: String,
+
+    /// Directory containing server icon PNG files.  Each file should be named
+    /// `{server_name}.png` (case-insensitive match).  Relative paths are
+    /// resolved from the working directory.
+    pub icons_dir: String,
 }
 
 impl Default for Config {
@@ -62,6 +67,7 @@ impl Default for Config {
             registry_port:     7004,
             registry_secret:   String::new(),
             db_path:       "friend_server.db".to_string(),
+            icons_dir:     "icons".to_string(),
         }
     }
 }
@@ -140,4 +146,7 @@ registry_secret = ""
 # ── Persistence ────────────────────────────────────────────────────────────
 # Path to the SQLite database file (relative to the server's working dir).
 db_path = "friend_server.db"
+
+# Directory containing server icon PNGs, named "{server_name}.png".
+icons_dir = "icons"
 "#;

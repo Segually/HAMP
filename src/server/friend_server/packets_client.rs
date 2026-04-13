@@ -87,6 +87,14 @@ pub enum ClientPacket {
         extra_byte: u8,
     },
 
+    /// `0x1D` — request the current public server list.
+    RequestServerList,
+
+    /// `0x1F` — request the icon for a specific public server.
+    RequestServerIcon {
+        server_name: String,
+    },
+
     /// `0x1E` — request to join a public server by name.
     TryJoinServer {
         server_name: String,
@@ -185,6 +193,17 @@ impl ClientPacket {
                 Some(Self::PrivateMsg { target: target.value, message: message.value })
             }
 
+            // ── REQUEST_SERVER_LIST (0x1D) ───────────────────────────────
+            // C→S  (no payload fields)
+            0x1D => Some(Self::RequestServerList),
+
+            // ── REQUEST_SERVER_ICON (0x1F) ───────────────────────────────
+            // C→S  [server_name: Str16]
+            0x1F => {
+                let server_name = Str16::read(&mut cur).ok()?;
+                Some(Self::RequestServerIcon { server_name: server_name.value })
+            }
+
             // ── TRY_JOIN_SERVER (0x1E) ───────────────────────────────────
             // C→S  [server_name: Str16]
             0x1E => {
@@ -268,6 +287,8 @@ impl ClientPacket {
             Self::AcceptFriend { .. } => PacketId::AcceptFriend,
             Self::RemoveFriend { .. } => PacketId::RemoveFriend,
             Self::PrivateMsg { .. }   => PacketId::PrivateMsg,
+            Self::RequestServerList        => PacketId::ServerList,
+            Self::RequestServerIcon { .. } => PacketId::ServerIcon,
             Self::TryJoinServer { .. } => PacketId::TryJoinServer,
             Self::PingResults { .. }   => PacketId::PingResults,
             Self::JoinGrant { .. }    => PacketId::JoinGrant,

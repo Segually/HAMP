@@ -58,25 +58,52 @@ fn strip_world_update(data: &[u8]) -> Vec<u8> {
     let mut out = wb;
     out.extend_from_slice(&s1);
     out.extend_from_slice(&wp);
-    out
+    return out;
 }
 
 // ── Public server list builders ────────────────────────────────────────────
 
 /// S→C 0x1D — full public server list.
-fn build_server_list(servers: &[RegisteredServer]) -> Vec<u8> {
-    let mut p = vec![0x1Du8, servers.len().min(255) as u8];
+fn build_server_list(servers: &[RegisteredServer], cfg: &Config) -> Vec<u8> {
+    // TODO: remove dummy once real servers are registered.
+    let dummy_icon = load_icon("Irradiated Badlands", cfg);
+    let dummy = RegisteredServer {
+        name:        "Irradiated Badlands".to_string(),
+        desc1:       "Sike! Rubidium isn't out yet.".to_string(),
+        desc2:       "Standby for real servers soon...".to_string(),
+        desc3:       String::new(),
+        desc4:       String::new(),
+        n_online:    67,
+        max_players: 67,
+        game_mode:   "PVP".to_string(),
+        public_ip:   "127.0.0.1".to_string(),
+        port:        0,
+        room_token:  "test".to_string(),
+        icon_bytes:  dummy_icon,
+    };
+    let count = (servers.len() + 1).min(255) as u8;
+    let mut p = vec![0x1Du8, count];
     for s in servers {
-        p.extend(pack_string(&s.name));
-        p.extend(pack_string(&s.desc1));
-        p.extend(pack_string(&s.desc2));
-        p.extend(pack_string(&s.desc3));
-        p.extend(pack_string(&s.desc4));
-        p.extend_from_slice(&s.n_online.to_le_bytes());
-        p.extend_from_slice(&s.max_players.to_le_bytes());
-        p.extend(pack_string(&s.game_mode));
+        p.extend(s.to_packet_entry());
     }
+    p.extend(dummy.to_packet_entry());
     p
+}
+
+/// Load a PNG from `{icons_dir}/{safe_name}.png`, returning `None` if missing
+/// or too large for the wire format (max i16::MAX bytes).
+fn load_icon(server_name: &str, cfg: &Config) -> Option<Vec<u8>> {
+    let safe = server_name.replace(['/', '\\', '.', ' '], "_");
+    let path = std::path::Path::new(&cfg.icons_dir).join(format!("{}.png", safe));
+    match std::fs::read(&path) {
+        Ok(b) if b.len() <= i16::MAX as usize => Some(b),
+        Ok(b) => {
+            eprintln!("[FRIEND] Icon '{}' is {} bytes — exceeds 32767 byte limit, ignoring",
+                server_name, b.len());
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 // ── Login response builder ─────────────────────────────────────────────────
@@ -211,12 +238,6 @@ pub fn handle_packet(
 
                 let resp = build_login_success(&canonical, state);
                 conn.send(2, &resp, "S->C [LOGIN_SUCCESS]");
-
-                // Send the current public server list.
-                let servers = state.public_servers.read().unwrap();
-                if !servers.is_empty() {
-                    conn.send(2, &build_server_list(&servers), "S->C [SERVER_LIST]");
-                }
             } else {
                 conn.send_pkt(&AuthFail, "S->C [AUTH_FAIL]");
             }
@@ -611,6 +632,49 @@ pub fn handle_packet(
             }
         }
 
+        // ── REQUEST SERVER ICON (0x1F) ────────────────────────────────────
+        // Client requests the PNG icon for a named server.
+        // S→C: 0x1F + Str16(server_name) + Byte(has_icon=1)
+        //        + Short(byte_count) + byte_count×Byte(raw PNG bytes)
+        // If no icon file is found, send has_icon=0 so the client uses its
+        // default icon instead of waiting forever.
+        ClientPacket::RequestServerIcon { server_name } => {
+            if current_user.is_some() {
+                // Check registered servers first, then fall back to disk.
+                let stored = state.public_servers.read().unwrap()
+                    .iter()
+                    .find(|s| s.name.eq_ignore_ascii_case(&server_name))
+                    .and_then(|s| s.icon_bytes.clone());
+
+                let bytes = stored.or_else(|| load_icon(&server_name, cfg));
+
+                let mut payload = vec![0x1Fu8];
+                payload.extend(pack_string(&server_name));
+                match bytes {
+                    Some(b) => {
+                        payload.push(0x01);
+                        payload.extend_from_slice(&(b.len() as u16).to_le_bytes());
+                        payload.extend_from_slice(&b);
+                        conn.send(2, &payload, "S->C [SERVER_ICON]");
+                    }
+                    None => {
+                        payload.push(0x00);
+                        conn.send(2, &payload, "S->C [SERVER_ICON_NONE]");
+                    }
+                }
+            }
+        }
+
+        // ── REQUEST SERVER LIST (0x1D) ────────────────────────────────────
+        // Client explicitly requests the current public server list.
+        // Always respond — even with an empty list — or the game hardlocks.
+        ClientPacket::RequestServerList => {
+            if current_user.is_some() {
+                let servers = state.public_servers.read().unwrap();
+                conn.send(2, &build_server_list(&servers, cfg), "S->C [SERVER_LIST]");
+            }
+        }
+
         // ── PING RESULTS (0x20) ────────────────────────────────────────────
         // We don't send a ping dispatch, so this should never arrive — drop.
         ClientPacket::PingResults { .. } => {}
@@ -669,22 +733,37 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
             continue;
         }
 
-        // ── Parse — drops unknown / malformed packets ──────────────────────
-        let packet = match ClientPacket::parse(data) {
-            Some(p) => p,
-            None => {
-                println!("[FRIEND] Dropped unrecognised packet from {} | {}", addr, to_hex_upper(data));
-                continue;
+        // ── Parse all complete packets in this read buffer ─────────────────
+        // Multiple packets can arrive in a single TCP segment; process them
+        // all.  Each has a u16 total_len at bytes [0..2], which tells us
+        // exactly where the next packet starts.
+        let mut pos = 0;
+        while pos + 10 <= n {
+            let pkt_total = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
+            if pkt_total < 10 || pos + pkt_total > n {
+                // Incomplete packet split across reads — stop for now.
+                break;
             }
-        };
+            let pkt = &data[pos..pos + pkt_total];
 
-        // Any valid packet resets the heartbeat deadline.
-        last_heartbeat = std::time::Instant::now();
+            let packet = match ClientPacket::parse(pkt) {
+                Some(p) => p,
+                None => {
+                    println!("[FRIEND] Dropped unrecognised packet from {} | {}", addr, to_hex_upper(pkt));
+                    pos += pkt_total;
+                    continue;
+                }
+            };
 
-        println!("\n[C->S] [{}] {}({}) | {}", packet.id().name(),
-            current_user.as_deref().unwrap_or("?"), conn.peer_ip(), to_hex_upper(data));
+            // Any valid packet resets the heartbeat deadline.
+            last_heartbeat = std::time::Instant::now();
 
-        handle_packet(packet, &conn, &mut current_user, &state, &cfg);
+            println!("\n[C->S] [{}] {}({}) | {}", packet.id().name(),
+                current_user.as_deref().unwrap_or("?"), conn.peer_ip(), to_hex_upper(pkt));
+
+            handle_packet(packet, &conn, &mut current_user, &state, &cfg);
+            pos += pkt_total;
+        }
     }
 
     // ── Cleanup on disconnect ──────────────────────────────────────────────

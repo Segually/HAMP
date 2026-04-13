@@ -32,6 +32,8 @@ pub enum PacketId {
     JumpToGame    = 0x25, // S→C  P2P handoff after join grant
     JoinGrant     = 0x2B, // C→S  host grants or denies a join request
     WorldUpdate   = 0x2C, // C→S  client broadcasts its world/lobby state
+    ServerList    = 0x1D, // both C→S request / S→C response (public server list)
+    ServerIcon    = 0x1F, // both C→S request / S→C response (server icon PNG)
     TryJoinServer = 0x1E, // C→S  request to join a public server by name
     PingResults   = 0x20, // C→S  ping results for server selection (after 0x20 S→C)
     JoinReq       = 0x2D, // C→S  request to join another player's session
@@ -57,7 +59,9 @@ impl PacketId {
             0x17 => FrOffline,
             0x18 => RemoveFriend,
             0x1A => PrivateMsg,
+            0x1D => ServerList,
             0x1E => TryJoinServer,
+            0x1F => ServerIcon,
             0x20 => PingResults,
             0x25 => JumpToGame,
             0x2B => JoinGrant,
@@ -86,6 +90,8 @@ impl PacketId {
             FrOffline    => "FR_OFFLINE",
             RemoveFriend => "REMOVE_FRIEND",
             PrivateMsg   => "PRIVATE_MSG",
+            ServerList   => "SERVER_LIST",
+            ServerIcon   => "SERVER_ICON",
             TryJoinServer => "TRY_JOIN_SERVER",
             PingResults   => "PING_RESULTS",
             JumpToGame   => "JUMP_TO_GAME",
