@@ -91,15 +91,21 @@ fn build_server_list(servers: &[RegisteredServer], cfg: &Config) -> Vec<u8> {
 }
 
 /// Load a PNG from `{icons_dir}/{safe_name}.png`, returning `None` if missing
-/// or too large for the wire format (max i16::MAX bytes).
+/// or too large for the wire format.
+///
+/// Hard limit: the client's `Connection` receive buffer is 8192 bytes (0x2000).
+/// The batch envelope (9 bytes) + packet-ID (1) + Str16 name (2 + utf16_bytes)
+/// + has_icon (1) + count (2) must all fit within that budget.
+/// We conservatively cap at 8000 bytes to leave room for any server name.
 fn load_icon(server_name: &str, cfg: &Config) -> Option<Vec<u8>> {
+    const MAX_ICON_BYTES: usize = 8000;
     let safe = server_name.replace(['/', '\\', '.', ' '], "_");
     let path = std::path::Path::new(&cfg.icons_dir).join(format!("{}.png", safe));
     match std::fs::read(&path) {
-        Ok(b) if b.len() <= i16::MAX as usize => Some(b),
+        Ok(b) if b.len() <= MAX_ICON_BYTES => Some(b),
         Ok(b) => {
-            eprintln!("[FRIEND] Icon '{}' is {} bytes — exceeds 32767 byte limit, ignoring",
-                server_name, b.len());
+            eprintln!("[FRIEND] Icon '{}' is {} bytes — exceeds {} byte client buffer limit, ignoring",
+                server_name, b.len(), MAX_ICON_BYTES);
             None
         }
         Err(_) => None,

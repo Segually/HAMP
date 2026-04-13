@@ -149,8 +149,21 @@ pub fn unpack_string(data: &[u8], offset: usize) -> (String, usize) {
 /// The packet-type byte is always the *first* byte of `payload`; callers are
 /// responsible for prepending it before calling this function.
 pub fn craft_batch(qid: u8, payload: &[u8]) -> Vec<u8> {
-    let total_len = (9 + payload.len()) as u16;
-    let mut out = Vec::with_capacity(9 + payload.len());
+    // Client receive_buffer is 0x2000 (8192) bytes; anything larger overflows
+    // it and corrupts memory. Warn loudly so oversized packets are caught early
+    // during development rather than silently crashing the client.
+    const CLIENT_RECV_BUF: usize = 8192;
+    let total = 9 + payload.len();
+    if total > CLIENT_RECV_BUF {
+        eprintln!(
+            "[WARN] craft_batch: packet 0x{:02X} is {} bytes — exceeds client receive buffer ({} bytes), client will crash!",
+            payload.first().copied().unwrap_or(0),
+            total,
+            CLIENT_RECV_BUF,
+        );
+    }
+    let total_len = total as u16;
+    let mut out = Vec::with_capacity(total);
     out.extend_from_slice(&total_len.to_le_bytes());
     out.push(0x01);
     out.push(qid);
