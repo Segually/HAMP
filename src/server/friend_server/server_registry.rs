@@ -14,16 +14,21 @@
 //                     [i16(max_players)][Str(game_mode)][Str(public_ip)][u16(port)]
 //                     [Str(room_token)]
 //     0x03  Update:   [i16(n_online)]
+//     0x04  Ping      (no payload)
 //
 //   Friend server → game server:
 //     0x01  Auth OK
 //     0x00  Auth fail (server then closes connection)
+//     0x04  Pong      (echoed in response to 0x04 Ping)
 //
 // On disconnect the server entry is removed from the list immediately.
+// A 20-second read timeout is set after registration so silently-dropped
+// connections are cleaned up quickly (the client pings every 15 seconds).
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use crate::utils::config::Config;
 
@@ -152,20 +157,33 @@ fn handle_connection(
     list.write().unwrap().push(server);
     println!("[REGISTRY] '{}' registered (max {} players, port {})", name, max_players, port);
 
+    // Heartbeat timeout: if no message arrives within 20 s the connection is
+    // considered dead and the server entry will be removed.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
+
     // ── Update loop ───────────────────────────────────────────────────────
     loop {
         let msg = match read_u8(stream) {
             Some(v) => v,
             None    => break,
         };
-        if msg != 0x03 { break; }
-        let n = match read_i16(stream) {
-            Some(v) => v,
-            None    => break,
-        };
-        let mut servers = list.write().unwrap();
-        if let Some(s) = servers.iter_mut().find(|s| s.name == name) {
-            s.n_online = n;
+        match msg {
+            0x03 => {
+                let n = match read_i16(stream) {
+                    Some(v) => v,
+                    None    => break,
+                };
+                let mut servers = list.write().unwrap();
+                if let Some(s) = servers.iter_mut().find(|s| s.name == name) {
+                    s.n_online = n;
+                }
+            }
+            0x04 => {
+                // Ping — echo back a pong so the client knows we're alive.
+                if stream.write_all(&[0x04]).is_err() { break; }
+                let _ = stream.flush();
+            }
+            _ => break,
         }
     }
 

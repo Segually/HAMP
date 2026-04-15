@@ -142,6 +142,7 @@ fn dispatch(cmd: &str, args: &str, adm: &mut AdminSession, state: &Arc<SharedSta
         "unspoof" => cmd_unspoof(adm, state),
         "recv"    => cmd_recv(adm, state, args),
         "check"      => cmd_check(state, args),
+        "setdisplay" => cmd_setdisplay(state, args),
         "fixdb"      => cmd_fixdb(state),
         "reports"    => cmd_reports(state),
         "db"         => cmd_db(state, args),
@@ -405,24 +406,45 @@ fn cmd_reports(state: &SharedState) -> String {
     out
 }
 
+fn cmd_setdisplay(state: &SharedState, args: &str) -> String {
+    // Usage: setdisplay <user> <display>
+    //        setdisplay <user>          ← clears display name (reverts to username)
+    let mut parts = args.splitn(2, ' ');
+    let user = match parts.next().filter(|s| !s.is_empty()) {
+        Some(u) => u,
+        None    => return "Usage: setdisplay <user> [display]\n".to_string(),
+    };
+    let display = parts.next().unwrap_or("").trim();
+    if state.db.set_display_name(user, display) {
+        if display.is_empty() {
+            format!("Display name for '{}' cleared (will show username).\n", user)
+        } else {
+            format!("Display name for '{}' set to '{}'.\n", user, display)
+        }
+    } else {
+        format!("[!] Player '{}' not found.\n", user)
+    }
+}
+
 fn cmd_help() -> String {
     "\
 Commands:\n\
-  help                  — list all commands\n\
-  list                  — show online users and their IPs\n\
-  send <user|*> <hex>   — send a raw payload to one user or everyone\n\
-  kick <user>           — forcibly disconnect a user\n\
-  create <user> <token> — register a new player with an explicit token\n\
-  delete <user>         — delete a player (refused if online)\n\
-  spoof <user>          — inject a fake session for <user>\n\
-  unspoof               — tear down the active fake session\n\
-  recv <hex>            — feed a raw client packet to the spoofed user\n\
-  check <user>          — inspect a player's friends/pending state\n\
-  fixdb                 — clean up stale pending requests\n\
-  reports               — list all player reports\n\
-  db <base64-sql>       — run a raw SQL query against the database\n\
-  restart               — kill the server (systemd will restart it)\n\
-  exit                  — close this admin session\n\
+  help                       — list all commands\n\
+  list                       — show online users and their IPs\n\
+  send <user|*> <hex>        — send a raw payload to one user or everyone\n\
+  kick <user>                — forcibly disconnect a user\n\
+  create <user> <token>      — register a new player with an explicit token\n\
+  delete <user>              — delete a player (refused if online)\n\
+  spoof <user>               — inject a fake session for <user>\n\
+  unspoof                    — tear down the active fake session\n\
+  recv <hex>                 — feed a raw client packet to the spoofed user\n\
+  check <user>               — inspect a player's friends/pending state\n\
+  setdisplay <user> [name]   — set (or clear) a cosmetic display name\n\
+  fixdb                      — clean up stale pending requests\n\
+  reports                    — list all player reports\n\
+  db <base64-sql>            — run a raw SQL query against the database\n\
+  restart                    — kill the server (systemd will restart it)\n\
+  exit                       — close this admin session\n\
 ".to_string()
 }
 

@@ -137,8 +137,9 @@ fn build_login_success(username: &str, state: &SharedState) -> Vec<u8> {
     for f_user in &friends {
         let is_on = sessions.contains_key(f_user.as_str());
         let world = worlds.get(f_user.as_str());
+        let f_display = state.db.get_display_name(f_user);
         resp.extend_from_slice(&pack_string(f_user));
-        resp.extend_from_slice(&pack_string(f_user)); // username = display
+        resp.extend_from_slice(&pack_string(&f_display));
         resp.push(is_on as u8);
         if is_on {
             let w = world.map(|w| w.as_slice())
@@ -153,16 +154,18 @@ fn build_login_success(username: &str, state: &SharedState) -> Vec<u8> {
     let outbound = state.db.get_pending_outbound(username);
     resp.extend_from_slice(&(outbound.len() as u16).to_le_bytes());
     for u in &outbound {
+        let disp = state.db.get_display_name(u);
         resp.extend_from_slice(&pack_string(u));
-        resp.extend_from_slice(&pack_string(u));
+        resp.extend_from_slice(&pack_string(&disp));
     }
 
     // ── Inbound pending (they sent you a request) ──────────────────────────
     let inbound = state.db.get_pending_inbound(username);
     resp.extend_from_slice(&(inbound.len() as u16).to_le_bytes());
     for u in &inbound {
+        let disp = state.db.get_display_name(u);
         resp.extend_from_slice(&pack_string(u));
-        resp.extend_from_slice(&pack_string(u));
+        resp.extend_from_slice(&pack_string(&disp));
     }
 
     // ── Trailer ────────────────────────────────────────────────────────────
@@ -251,15 +254,17 @@ pub fn handle_packet(
                     .unwrap_or_else(|| target_raw.clone());
 
                 if t != *user && state.db.add_friend_request(user, &t) {
+                    let t_display = state.db.get_display_name(&t);
                     conn.send_pkt(
                         &AddFriendOk {
                             username: Str16::new(&t),
-                            display:  Str16::new(&t),
+                            display:  Str16::new(&t_display),
                         },
                         "S->C [ADD_OK]",
                     );
 
                     // Push request notification to target if online.
+                    let user_display = state.db.get_display_name(user);
                     let target_conn = state.sessions.read().unwrap()
                         .get(&t)
                         .map(Arc::clone);
@@ -267,7 +272,7 @@ pub fn handle_packet(
                         tc.send_pkt(
                             &PushFriendReq {
                                 username: Str16::new(user),
-                                display:  Str16::new(user),
+                                display:  Str16::new(&user_display),
                             },
                             "S->C [PUSH_REQ]",
                         );
@@ -316,12 +321,13 @@ pub fn handle_packet(
                         let world_u = worlds.get(user.as_str())
                             .cloned()
                             .unwrap_or_else(|| crate::defs::packet::DEFAULT_WORLD.to_vec());
+                        let user_display = state.db.get_display_name(user);
 
                         // Notify requester they were accepted.
                         tc.send_pkt(
                             &PushAccepted {
                                 username:   Str16::new(user),
-                                display:    Str16::new(user),
+                                display:    Str16::new(&user_display),
                                 world_data: world_u.clone(),
                             },
                             "S->C [PUSH_ACCEPTED]",
@@ -461,7 +467,8 @@ pub fn handle_packet(
                     //    The map tracks ALL players in relay sessions (hosts + guests).
                     //    If the granting user is already in someone else's world,
                     //    the joiner gets sent to that same session.
-                    let room = user.clone();
+                    let room         = user.clone();
+                    let user_display = state.db.get_display_name(user);
                     let ip   = if cfg.public_ip.is_empty() { &cfg.host } else { &cfg.public_ip };
 
                     let existing_port = {
@@ -485,7 +492,7 @@ pub fn handle_packet(
                             // Joiner gets their OWN username as token so the
                             // game server can distinguish them from the host.
                             let jump_joiner = JumpToGame {
-                                display:       Str16::new(user),
+                                display:       Str16::new(&user_display),
                                 token:         Str16::new(&t),
                                 host_ip:       Str16::new(ip),
                                 mode:          Str16::new(ip),
@@ -503,7 +510,7 @@ pub fn handle_packet(
                                 // Host token = host username (matches room_token → host).
                                 // Joiner token = joiner username (won't match → guest).
                                 let jump_host = JumpToGame {
-                                    display:       Str16::new(user),
+                                    display:       Str16::new(&user_display),
                                     token:         Str16::new(&room),
                                     host_ip:       Str16::new(ip),
                                     mode:          Str16::new(ip),
@@ -511,7 +518,7 @@ pub fn handle_packet(
                                     password_flag: 0x00,
                                 };
                                 let jump_joiner = JumpToGame {
-                                    display:       Str16::new(user),
+                                    display:       Str16::new(&user_display),
                                     token:         Str16::new(&t),
                                     host_ip:       Str16::new(ip),
                                     mode:          Str16::new(ip),
@@ -530,7 +537,7 @@ pub fn handle_packet(
                             // Host token = host username (matches room_token → host).
                             // Joiner token = joiner username (won't match → guest).
                             let jump_host = JumpToGame {
-                                display:       Str16::new(user),
+                                display:       Str16::new(&user_display),
                                 token:         Str16::new(&room),
                                 host_ip:       Str16::new(ip),
                                 mode:          Str16::new(ip),
@@ -538,7 +545,7 @@ pub fn handle_packet(
                                 password_flag: 0x00,
                             };
                             let jump_joiner = JumpToGame {
-                                display:       Str16::new(user),
+                                display:       Str16::new(&user_display),
                                 token:         Str16::new(&t),
                                 host_ip:       Str16::new(ip),
                                 mode:          Str16::new(ip),

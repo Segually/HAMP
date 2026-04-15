@@ -21,8 +21,9 @@ use rusqlite::{params, Connection, Result as SqlResult};
 /// Minimal player record returned from the `players` table.
 #[derive(Debug, Clone)]
 pub struct PlayerRow {
-    pub username: String,
-    pub token:    String,
+    pub username:     String,
+    pub token:        String,
+    pub display_name: Option<String>,
 }
 
 /// A report entry returned from the `reports` table.
@@ -57,10 +58,40 @@ impl Db {
     pub fn get_player(&self, username: &str) -> Option<PlayerRow> {
         let conn = self.0.lock().unwrap();
         conn.query_row(
-            "SELECT username, token FROM players WHERE username = ?1",
+            "SELECT username, token, display_name FROM players WHERE username = ?1",
             params![username],
-            |row| Ok(PlayerRow { username: row.get(0)?, token: row.get(1)? }),
+            |row| Ok(PlayerRow {
+                username:     row.get(0)?,
+                token:        row.get(1)?,
+                display_name: row.get(2)?,
+            }),
         ).ok()
+    }
+
+    /// Returns the display name for `username`, falling back to `username`
+    /// itself if none has been set.
+    pub fn get_display_name(&self, username: &str) -> String {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT display_name FROM players WHERE username = ?1",
+            params![username],
+            |row| row.get::<_, Option<String>>(0),
+        ).ok()
+            .flatten()
+            .unwrap_or_else(|| username.to_string())
+    }
+
+    /// Sets a custom display name for `username`.
+    /// Pass an empty string to clear the display name (revert to username).
+    /// Returns `false` if the player does not exist.
+    pub fn set_display_name(&self, username: &str, display: &str) -> bool {
+        if !self.player_exists(username) { return false; }
+        let val: Option<&str> = if display.is_empty() { None } else { Some(display) };
+        let conn = self.0.lock().unwrap();
+        conn.execute(
+            "UPDATE players SET display_name = ?1 WHERE username = ?2",
+            params![val, username],
+        ).map(|n| n > 0).unwrap_or(false)
     }
 
     /// Returns `true` if a player with the given username exists (case-insensitive).
@@ -296,42 +327,47 @@ impl Db {
 /// Upgrades an older schema to the current layout.
 ///
 /// v1 → v2: drop the `display` column; add `COLLATE NOCASE` to the primary
-/// key so lookups are case-insensitive while storing the player's chosen casing.
+///           key so lookups are case-insensitive while storing chosen casing.
+/// v2 → v3: add `display_name TEXT` column for cosmetic names.
 fn migrate(conn: &Connection) -> SqlResult<()> {
-    // Check whether the old `display` column still exists.
-    let has_display: bool = {
+    let cols: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(players)")?;
-        let cols: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
+        stmt.query_map([], |row| row.get::<_, String>(1))?
             .flatten()
-            .collect();
-        cols.iter().any(|c| c == "display")
+            .collect()
     };
 
-    if !has_display {
-        return Ok(()); // already on current schema
+    // v1 → v2: drop the old `display` column, rebuild with COLLATE NOCASE.
+    if cols.iter().any(|c| c == "display") {
+        println!("[DB] Migrating schema v1→v2: dropping display column, adding COLLATE NOCASE …");
+        conn.execute_batch("
+            PRAGMA foreign_keys = OFF;
+            BEGIN;
+
+            CREATE TABLE players_new (
+                username     TEXT PRIMARY KEY COLLATE NOCASE,
+                token        TEXT NOT NULL,
+                display_name TEXT
+            );
+            INSERT INTO players_new (username, token)
+                SELECT username, token FROM players;
+            DROP TABLE players;
+            ALTER TABLE players_new RENAME TO players;
+
+            COMMIT;
+            PRAGMA foreign_keys = ON;
+        ")?;
+        println!("[DB] Migration v1→v2 complete.");
+        return Ok(()); // display_name already added above
     }
 
-    println!("[DB] Migrating schema: dropping display column, adding COLLATE NOCASE …");
+    // v2 → v3: add display_name column if it doesn't exist yet.
+    if !cols.iter().any(|c| c == "display_name") {
+        println!("[DB] Migrating schema v2→v3: adding display_name column …");
+        conn.execute_batch("ALTER TABLE players ADD COLUMN display_name TEXT;")?;
+        println!("[DB] Migration v2→v3 complete.");
+    }
 
-    conn.execute_batch("
-        PRAGMA foreign_keys = OFF;
-        BEGIN;
-
-        CREATE TABLE players_new (
-            username TEXT PRIMARY KEY COLLATE NOCASE,
-            token    TEXT NOT NULL
-        );
-        INSERT INTO players_new (username, token)
-            SELECT username, token FROM players;
-        DROP TABLE players;
-        ALTER TABLE players_new RENAME TO players;
-
-        COMMIT;
-        PRAGMA foreign_keys = ON;
-    ")?;
-
-    println!("[DB] Migration complete.");
     Ok(())
 }
 
@@ -339,8 +375,9 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS players (
-    username TEXT PRIMARY KEY COLLATE NOCASE,
-    token    TEXT NOT NULL
+    username     TEXT PRIMARY KEY COLLATE NOCASE,
+    token        TEXT NOT NULL,
+    display_name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS friends (

@@ -15,10 +15,12 @@
 //                     [i16(max_players)][Str(game_mode)][Str(public_ip)][u16(port)]
 //                     [Str(room_token)]
 //     0x03  Update:   [i16(n_online)]
+//     0x04  Ping      (no payload) — sent every 15 s; expect 0x04 Pong back
 //
 //   Friend server → game server:
 //     0x01  Auth OK
 //     0x00  Auth fail
+//     0x04  Pong      (echoed response to 0x04 Ping)
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -137,13 +139,44 @@ fn session_loop(
     stream.flush()?;
     println!("[REGISTRY] Registered as '{}'", p.server_name);
 
-    // ── Update loop: send player count every 30 s ─────────────────────────
+    // ── Heartbeat + update loop ───────────────────────────────────────────
+    // Send a 0x04 ping every 15 s so the friend server can detect a dead
+    // connection within ~20 s.  Send a 0x03 player-count update every 30 s
+    // (every other iteration).
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(25)))?;
+    let mut tick: u32 = 0;
     loop {
-        let n = session.player_count() as i16;
-        stream.write_all(&[0x03])?;
-        stream.write_all(&n.to_le_bytes())?;
+        tick += 1;
+
+        // Every other tick (30 s): send player-count update.
+        if tick % 2 == 0 {
+            let n = session.player_count() as i16;
+            stream.write_all(&[0x03])?;
+            stream.write_all(&n.to_le_bytes())?;
+        } else {
+            // Odd ticks (15 s): send ping, wait for pong.
+            stream.write_all(&[0x04])?;
+        }
         stream.flush()?;
-        std::thread::sleep(Duration::from_secs(30));
+
+        // Drain any incoming pong (0x04) without blocking the sleep cycle.
+        // If the server sends something unexpected or times out, bail out so
+        // the caller can reconnect.
+        let mut resp = [0u8; 1];
+        if tick % 2 != 0 {
+            match stream.read_exact(&mut resp) {
+                Ok(()) if resp[0] == 0x04 => {} // pong received
+                Ok(()) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("unexpected pong byte 0x{:02X}", resp[0]),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        std::thread::sleep(Duration::from_secs(15));
     }
 }
