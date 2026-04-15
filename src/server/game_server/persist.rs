@@ -190,7 +190,7 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
     let template = WorldTemplate::new(seed, zones);
     let default_zone = template.zones.first()
         .map(|z| z.name.clone())
-        .unwrap_or_else(|| "Main".to_string());
+        .unwrap_or_else(|| "overworld".to_string());
 
     // Chunks
     let chunk_count = ru32(&mut r)? as usize;

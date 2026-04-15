@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 static NEXT_UNIQUE_ID: AtomicI64 = AtomicI64::new(1_000_000);
 
 use crate::utils::config::Config;
-use crate::defs::packet::{craft_batch, pack_string, unpack_string, ServerPacket};
+use crate::defs::packet::{craft_batch, pack_string, unpack_string, write_payload, ServerPacket};
 use packets_client::{skip_basket_contents, GameClientPacket};
 use packets_server::{
     BasketUpdateBroadcast, BasketUpdateToHost, BeginMinigameRelay, ChatBroadcast,
@@ -134,28 +134,27 @@ impl Session {
 
     /// Serialises `pkt` and sends it to all players except `exclude`.
     fn broadcast(&self, pkt: &impl ServerPacket, exclude: Option<&str>) {
-        let batch = craft_batch(2, &pkt.to_payload());
+        let payload = pkt.to_payload();
         for (name, p) in self.players.lock().unwrap().iter() {
             if exclude == Some(name.as_str()) { continue; }
-            let _ = p.sink.lock().unwrap().write_all(&batch);
+            let _ = write_payload(&mut *p.sink.lock().unwrap(), 2, &payload);
         }
     }
 
     /// Like `broadcast`, but only sends to players in the same zone as `zone`.
     fn broadcast_zone(&self, pkt: &impl ServerPacket, zone: &str, exclude: Option<&str>) {
-        let batch = craft_batch(2, &pkt.to_payload());
+        let payload = pkt.to_payload();
         for (name, p) in self.players.lock().unwrap().iter() {
             if exclude == Some(name.as_str()) { continue; }
             if *p.zone.lock().unwrap() != zone { continue; }
-            let _ = p.sink.lock().unwrap().write_all(&batch);
+            let _ = write_payload(&mut *p.sink.lock().unwrap(), 2, &payload);
         }
     }
 
     /// Serialises `pkt` and sends it to a single player by username.
     fn send_to(&self, target: &str, pkt: &impl ServerPacket) {
         if let Some(p) = self.players.lock().unwrap().get(target) {
-            let batch = craft_batch(2, &pkt.to_payload());
-            let _ = p.sink.lock().unwrap().write_all(&batch);
+            let _ = write_payload(&mut *p.sink.lock().unwrap(), 2, &pkt.to_payload());
         }
     }
 }
@@ -220,7 +219,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
         while !accum.is_empty() {
             // Handshake probe: single 0x66 byte (no length prefix).
             if accum[0] == 0x66 {
-                let _ = stream.write_all(&craft_batch(0, &[0x09, 0x01]));
+                let _ = write_payload(&mut stream, 0, &[0x09, 0x01]);
                 accum.remove(0);
                 continue;
             }
@@ -239,12 +238,12 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
             // ── PING (0x01) ────────────────────────────────────────────────
             0x01 => {
-                let _ = stream.write_all(&craft_batch(2, &[0x01]));
+                let _ = write_payload(&mut stream, 2, &[0x01]);
             }
 
             // ── HEARTBEAT (0x0F) ───────────────────────────────────────────
             0x0F => {
-                let _ = stream.write_all(&craft_batch(2, &[0x0F]));
+                let _ = write_payload(&mut stream, 2, &[0x0F]);
             }
 
             // ── LOGIN (0x26) ───────────────────────────────────────────────
@@ -330,25 +329,25 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 }
 
                 // 1. S→C 0x26: login response
-                let _ = stream.write_all(&craft_batch(2, &LoginResponse { world_name: &world, player_uid: &uid }.to_payload()));
+                let _ = write_payload(&mut stream, 2, &LoginResponse { world_name: &world, player_uid: &uid }.to_payload());
 
                 // 2. S→C 0x2A: unique IDs — allocate a per-player block from the global counter.
                 const INITIAL_ID_BLOCK: u16 = 25;
                 let id_start = NEXT_UNIQUE_ID.fetch_add(INITIAL_ID_BLOCK as i64, Ordering::Relaxed);
-                let _ = stream.write_all(&craft_batch(2, &UniqueIds { start: id_start, count: INITIAL_ID_BLOCK }.to_payload()));
+                let _ = write_payload(&mut stream, 2, &UniqueIds { start: id_start, count: INITIAL_ID_BLOCK }.to_payload());
 
                 // 3. S→C 0x02: join confirmed (is_host=true for host, false for guests)
-                let _ = stream.write_all(&craft_batch(2, &JoinConfirmed { server_name: &world, username: &uid, is_host: is_host_flag }.to_payload()));
+                let _ = write_payload(&mut stream, 2, &JoinConfirmed { server_name: &world, username: &uid, is_host: is_host_flag }.to_payload());
 
                 // 4. S→C 0x0B: zone data
                 let zone_name = match session.mode {
                     SessionMode::Managed(ref ws) => ws.default_zone.clone(),
                     SessionMode::Relay => "overworld".to_string(),
                 };
-                let _ = stream.write_all(&craft_batch(2, &ZoneData { zone_name: &zone_name }.to_payload()));
+                let _ = write_payload(&mut stream, 2, &ZoneData { zone_name: &zone_name }.to_payload());
 
                 // 5. S→C 0x17: daynight
-                let _ = stream.write_all(&craft_batch(2, &DayNight { ms: 12000 }.to_payload()));
+                let _ = write_payload(&mut stream, 2, &DayNight { ms: 12000 }.to_payload());
 
                 // 6. S→C 0x07: join notification (broadcast to others)
                 session.broadcast(&JoinNotif { username: &uid, joined: true }, Some(uid.as_str()));
@@ -407,7 +406,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         let opd_owned = opd;
                         let zone_owned = zone_name.clone();
                         std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            std::thread::sleep(std::time::Duration::from_secs(1));
 
                             // 1. Broadcast this player to everyone in the same zone.
                             let spawn_pkt = PlayerNearby { username: &uid_owned, display: &uid_owned, opd: &opd_owned }.to_payload();
@@ -462,7 +461,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             } else {
                                 zone_name
                             };
-                            let _ = stream.write_all(&craft_batch(2, &ZoneData { zone_name: &zone }.to_payload()));
+                            let _ = write_payload(&mut stream, 2, &ZoneData { zone_name: &zone }.to_payload());
                         }
                         SessionMode::Relay => {
                             let host = session.host.lock().unwrap().clone();
@@ -470,7 +469,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             if is_host {
                                 // Host gets zone data directly.
                                 let zone = if zone_name.is_empty() { "overworld".to_string() } else { zone_name };
-                                let _ = stream.write_all(&craft_batch(2, &ZoneData { zone_name: &zone }.to_payload()));
+                                let _ = write_payload(&mut stream, 2, &ZoneData { zone_name: &zone }.to_payload());
                             } else if let Some(ref hname) = host {
                                 // Guest → relay to host.
                                 // Host expects: Str(zone_name) + Str(requester) + u8(type) [+ Pos if type 2|3]
@@ -506,7 +505,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         match session.mode {
                             SessionMode::Managed(ref world) => {
                                 let wire = world.get_chunk_wire(x, z);
-                                let _ = stream.write_all(&craft_batch(2, &wire));
+                                let _ = write_payload(&mut stream, 2, &wire);
                             }
                             SessionMode::Relay => {
                                 let host = session.host.lock().unwrap().clone();
@@ -516,7 +515,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                     // but the client still sends 0x0C to the server.
                                     // Send back an empty chunk so it doesn't stall.
                                     let empty = world_state::Chunk::blank(x, z, &zone_name).to_wire();
-                                    let _ = stream.write_all(&craft_batch(2, &empty));
+                                    let _ = write_payload(&mut stream, 2, &empty);
                                 } else if host.is_some() {
                                     // Guest → relay request to host.
                                     // Host expects: Str(requester) + Str(zone) + Str(sub_zone) + i16(x) + i16(z)
@@ -1020,13 +1019,67 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
             // ── REPLACE_BUILDABLE (0x22) ──────────────────────────────────
             // C→S: [validator:Str][old_Item][new_Item][rot:u8][zone:Str][shorts×4][extra:Str]
-            // S→C: [old_Item][new_Item][rot:u8][zone:Str][shorts×4][owner:Str]
+            // S→C: [old_Item][new_Item][rot:u8][zone:Str][shorts×4][owner:Str][extra]
             0x22 => {
                 if let Some(ref uid) = player_id {
-                    let (_, off) = unpack_string(data, 10); // skip validator
-                    let mut pkt = vec![0x22u8];
-                    pkt.extend_from_slice(&data[off..]);
-                    session.broadcast(&pkt, Some(uid.as_str()));
+                    let (_, mut off) = unpack_string(data, 10); // skip validator
+                    if let Some((old_item, next)) = read_inventory_item(data, off) {
+                        off = next;
+                        if let Some((new_item, next)) = read_inventory_item(data, off) {
+                            off = next;
+                            if off < data.len() {
+                                let rotation = data[off]; off += 1;
+                                let (zone_str, next) = unpack_string(data, off); off = next;
+                                if off + 8 <= data.len() {
+                                    let cx = i16::from_le_bytes([data[off],   data[off+1]]);
+                                    let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
+                                    let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
+                                    let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
+                                    let shorts_bytes = &data[off..off+8]; off += 8;
+                                    let extra = &data[off..];
+
+                                    // S→C: old_Item + new_Item + rot + zone + shorts×4 + owner + extra
+                                    let mut pkt = vec![0x22u8];
+                                    pkt.extend_from_slice(&old_item);
+                                    pkt.extend_from_slice(&new_item);
+                                    pkt.push(rotation);
+                                    pkt.extend(pack_string(&zone_str));
+                                    pkt.extend_from_slice(shorts_bytes);
+                                    pkt.extend(pack_string(uid));
+                                    pkt.extend_from_slice(extra);
+                                    session.broadcast(&pkt, Some(uid.as_str()));
+
+                                    // Replace in WorldState for managed mode.
+                                    if let SessionMode::Managed(ref ws) = session.mode {
+                                        if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&(cx, cz)) {
+                                            let tx8 = tx as u8;
+                                            let tz8 = tz as u8;
+                                            // Remove old element (exact match; tile-only fallback)
+                                            let pos = chunk.elements.iter().position(|e| {
+                                                e.cell_x == tx8 && e.cell_z == tz8
+                                                    && e.rotation == rotation && e.item_data == old_item
+                                            }).or_else(|| chunk.elements.iter().position(|e| {
+                                                e.cell_x == tx8 && e.cell_z == tz8
+                                            }));
+                                            if let Some(i) = pos { chunk.elements.remove(i); }
+                                            // Add new element
+                                            use world_state::ChunkElement;
+                                            chunk.elements.push(ChunkElement {
+                                                cell_x: tx8, cell_z: tz8,
+                                                rotation, item_data: new_item,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Malformed — relay as-is without owner
+                        let (_, off) = unpack_string(data, 10);
+                        let mut pkt = vec![0x22u8];
+                        pkt.extend_from_slice(&data[off..]);
+                        session.broadcast(&pkt, Some(uid.as_str()));
+                    }
                 }
             }
 
@@ -1427,7 +1480,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 if player_id.is_some() {
                     const REFILL_BLOCK: u16 = 25;
                     let id_start = NEXT_UNIQUE_ID.fetch_add(REFILL_BLOCK as i64, Ordering::Relaxed);
-                    let _ = stream.write_all(&craft_batch(2, &UniqueIds { start: id_start, count: REFILL_BLOCK }.to_payload()));
+                    let _ = write_payload(&mut stream, 2, &UniqueIds { start: id_start, count: REFILL_BLOCK }.to_payload());
                 }
             }
 
@@ -1521,16 +1574,30 @@ pub fn run(cfg: &Config) {
             } else {
                 eprintln!("[GAME] Failed to load world ({}), generating fresh", e);
             }
-            WorldState::new("World", 5, WorldTemplate::default())
+            let seed = match cfg.world_seed {
+                Some(s) if s != 0 => s,
+                _ => rand::random::<u64>(),
+            };
+            println!("[GAME] World seed: {}", seed);
+            let mut tmpl = WorldTemplate::default();
+            tmpl.seed = seed;
+            WorldState::new("World", 5, tmpl)
         }
     });
+
+    // Mutex shared between the SIGTERM handler and the background save thread
+    // so they never write the world file concurrently (both write to a .tmp
+    // then rename — two concurrent saves would corrupt the .tmp file).
+    let save_lock = Arc::new(std::sync::Mutex::<()>::new(()));
 
     // SIGTERM / SIGINT handler: save world and exit cleanly.
     {
         let world_ref = Arc::clone(&world);
-        let path = save_path.clone();
+        let path      = save_path.clone();
+        let lock      = Arc::clone(&save_lock);
         ctrlc::set_handler(move || {
             println!("[GAME] Shutdown signal — saving world...");
+            let _guard = lock.lock().unwrap();
             match persist::save(&world_ref, &path) {
                 Ok(())  => println!("[GAME] World saved, exiting."),
                 Err(e)  => eprintln!("[GAME] Save failed on shutdown: {}", e),
@@ -1542,10 +1609,12 @@ pub fn run(cfg: &Config) {
     // Background save thread: persists the full world every 5 minutes.
     {
         let world_ref = Arc::clone(&world);
-        let path = save_path.clone();
+        let path      = save_path.clone();
+        let lock      = Arc::clone(&save_lock);
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(300));
+                let _guard = lock.lock().unwrap();
                 match persist::save(&world_ref, &path) {
                     Ok(()) => println!("[GAME] World saved to {}", path.display()),
                     Err(e) => eprintln!("[GAME] Save failed: {}", e),

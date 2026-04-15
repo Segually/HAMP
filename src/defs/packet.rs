@@ -173,6 +173,53 @@ pub fn craft_batch(qid: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Maximum payload bytes that fit in a single wire frame.
+///
+/// Client receive buffer is 8 192 bytes (0x2000); the 9-byte frame header
+/// (total_len u16 + 0x01 + qid + status + payload_len u32) leaves 8 183 bytes
+/// for payload.  `write_payload` uses this to decide whether to fragment.
+pub const MAX_FRAME_PAYLOAD: usize = 8183;
+
+/// Low-level helper: builds a single wire frame with an explicit status byte.
+///
+/// Fragment status semantics (confirmed via RE of `SendQueue$$Write` /
+/// `ReceiveQueue$$Read`):
+///   0 — continuation fragment, **last** in sequence → client finalises packet
+///   1 — continuation fragment, more follow
+///   2 — **first** fragment of a new multi-frame packet
+///   3 — complete packet in one frame (normal `craft_batch` behaviour)
+fn craft_frame(qid: u8, status: u8, payload: &[u8]) -> Vec<u8> {
+    let total_len = (9 + payload.len()) as u16;
+    let mut out = Vec::with_capacity(9 + payload.len());
+    out.extend_from_slice(&total_len.to_le_bytes());
+    out.push(0x01);   // one queue record
+    out.push(qid);    // stream / queue id
+    out.push(status); // fragment status
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// Writes `payload` to `w`, transparently splitting into multiple frames when
+/// the payload exceeds `MAX_FRAME_PAYLOAD`.
+///
+/// For small payloads this is identical to `write_all(&craft_batch(qid, payload))`.
+/// For large payloads the game's built-in fragment protocol is used so the
+/// client reassembles them before dispatching to its packet handler — no
+/// client-side changes required.
+pub fn write_payload<W: std::io::Write>(w: &mut W, qid: u8, payload: &[u8]) -> std::io::Result<()> {
+    if payload.len() <= MAX_FRAME_PAYLOAD {
+        return w.write_all(&craft_batch(qid, payload));
+    }
+    let chunks: Vec<&[u8]> = payload.chunks(MAX_FRAME_PAYLOAD).collect();
+    let last = chunks.len() - 1;
+    for (i, chunk) in chunks.iter().enumerate() {
+        let status: u8 = if i == 0 { 2 } else if i == last { 0 } else { 1 };
+        w.write_all(&craft_frame(qid, status, chunk))?;
+    }
+    Ok(())
+}
+
 /// Returns an uppercase hex string with no separator.
 pub fn to_hex_upper(bytes: &[u8]) -> String {
     bytes.iter().fold(

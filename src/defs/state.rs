@@ -6,7 +6,7 @@ use std::net::TcpStream;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::utils::db::Db;
-use crate::defs::packet::{Str16, craft_batch, to_hex_upper};
+use crate::defs::packet::{Str16, craft_batch, write_payload, to_hex_upper, MAX_FRAME_PAYLOAD};
 use crate::defs::packet::ServerPacket;
 use crate::server::friend_server::packets_server::{FriendOffline, FriendOnline};
 use crate::server::friend_server::server_registry::RegisteredServer;
@@ -46,18 +46,27 @@ impl SessionConn {
     }
 
     /// Wraps `payload` in a batch frame, logs it, and writes it to the stream
-    /// (or appends it to the sink buffer).
+    /// (or appends it to the sink buffer).  Large payloads are transparently
+    /// split into multiple frames via `write_payload`.
     pub fn send(&self, qid: u8, payload: &[u8], label: &str) {
-        let batch = craft_batch(qid, payload);
-        println!("[{}] -> {} | {}", label, self.peer_ip(), to_hex_upper(&batch));
+        // Log a hex dump for small payloads; for large ones just note the size
+        // to avoid triggering the single-frame overflow WARN in craft_batch.
+        if payload.len() <= MAX_FRAME_PAYLOAD {
+            let batch = craft_batch(qid, payload);
+            println!("[{}] -> {} | {}", label, self.peer_ip(), to_hex_upper(&batch));
+        } else {
+            let n_frames = payload.len().div_ceil(MAX_FRAME_PAYLOAD);
+            println!("[{}] -> {} | {} bytes ({} frames)", label, self.peer_ip(), payload.len(), n_frames);
+        }
         match self {
             Self::Real { stream, .. } => {
                 if let Ok(mut s) = stream.lock() {
-                    let _ = s.write_all(&batch);
+                    let _ = write_payload(&mut *s, qid, payload);
                 }
             }
             Self::Sink { buf, .. } => {
-                buf.lock().unwrap().extend_from_slice(&batch);
+                let mut v = buf.lock().unwrap();
+                let _ = write_payload(&mut *v, qid, payload);
             }
         }
     }

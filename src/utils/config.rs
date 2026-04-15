@@ -57,6 +57,11 @@ pub struct Config {
     /// Contains `world.hws` and future per-world subdirectories.
     pub world_data_dir: String,
 
+    /// Seed for world generation.  If omitted (or 0), a random seed is chosen
+    /// on first generation and saved into `world.hws` so it persists across
+    /// restarts.  Has no effect once a save file already exists.
+    pub world_seed: Option<u64>,
+
     // ── Friend-server registry (game server → friend server) ──────────────
     /// Hostname/IP of the friend server's registry listener.
     /// Leave empty to disable registry registration.
@@ -105,6 +110,7 @@ impl Default for Config {
             db_path:       "friend_server.db".to_string(),
             icons_dir:     "icons".to_string(),
             world_data_dir:"world_data".to_string(),
+            world_seed:     None,
 
             friend_registry_host:   String::new(),
             friend_registry_port:   0,
@@ -201,6 +207,10 @@ icons_dir = "icons"
 
 # Directory where the managed game server stores world state (world.hws).
 world_data_dir = "world_data"
+
+# Optional fixed seed for world generation (u64).  Omit or set to 0 for a
+# random seed chosen at first startup.  Ignored if a save file already exists.
+# world_seed = 12345678
 
 # ── Friend-server registry ──────────────────────────────────────────────────
 # Uncomment all three to have the game server register itself with a friend

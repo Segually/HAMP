@@ -201,7 +201,7 @@ impl WorldState {
     pub fn new(name: &str, grid_radius: i16, template: WorldTemplate) -> Self {
         let default_zone = template.zones.first()
             .map(|z| z.name.clone())
-            .unwrap_or_else(|| "Main".to_string());
+            .unwrap_or_else(|| "overworld".to_string());
 
         let generator = WorldGenerator::new(template);
         let mut chunks = HashMap::new();
