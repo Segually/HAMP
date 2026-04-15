@@ -52,6 +52,42 @@ pub struct Config {
     /// `{server_name}.png` (case-insensitive match).  Relative paths are
     /// resolved from the working directory.
     pub icons_dir: String,
+
+    /// Directory where the managed game server stores world state.
+    /// Contains `world.hws` and future per-world subdirectories.
+    pub world_data_dir: String,
+
+    // ── Friend-server registry (game server → friend server) ──────────────
+    /// Hostname/IP of the friend server's registry listener.
+    /// Leave empty to disable registry registration.
+    pub friend_registry_host: String,
+
+    /// Port of the friend server's registry listener (matches `registry_port`
+    /// on the friend server). Set to 0 to disable.
+    pub friend_registry_port: u16,
+
+    /// Shared secret matching `registry_secret` on the friend server.
+    /// Leave empty to disable.
+    pub friend_registry_secret: String,
+
+    /// Name shown in the server list on the friend server.
+    pub server_name: String,
+
+    /// Description lines shown in the server list (desc1–desc4 slots).
+    pub server_desc: String,
+    pub server_desc2: String,
+    pub server_desc3: String,
+    pub server_desc4: String,
+
+    /// Maximum concurrent players advertised to the friend server.
+    pub server_max_players: i16,
+
+    /// Game-mode string advertised to the friend server (e.g. "survival").
+    pub server_game_mode: String,
+
+    /// Room token sent in the JumpToGame packet so the game server can
+    /// identify the session. Leave empty to use a random token.
+    pub server_room_token: String,
 }
 
 impl Default for Config {
@@ -68,6 +104,19 @@ impl Default for Config {
             registry_secret:   String::new(),
             db_path:       "friend_server.db".to_string(),
             icons_dir:     "icons".to_string(),
+            world_data_dir:"world_data".to_string(),
+
+            friend_registry_host:   String::new(),
+            friend_registry_port:   0,
+            friend_registry_secret: String::new(),
+            server_name:        "HAMP Server".to_string(),
+            server_desc:        String::new(),
+            server_desc2:       String::new(),
+            server_desc3:       String::new(),
+            server_desc4:       String::new(),
+            server_max_players: 50,
+            server_game_mode:   String::new(),
+            server_room_token:  String::new(),
         }
     }
 }
@@ -149,4 +198,25 @@ db_path = "friend_server.db"
 
 # Directory containing server icon PNGs, named "{server_name}.png".
 icons_dir = "icons"
+
+# Directory where the managed game server stores world state (world.hws).
+world_data_dir = "world_data"
+
+# ── Friend-server registry ──────────────────────────────────────────────────
+# Uncomment all three to have the game server register itself with a friend
+# server so it appears in the public server list.
+#
+# friend_registry_host   = "3.5.3.2"
+# friend_registry_port   = 7004
+# friend_registry_secret = "change_me"
+#
+# What to show in the server list:
+# server_name        = "My Server"
+# server_desc        = ""
+# server_desc2       = ""
+# server_desc3       = ""
+# server_desc4       = ""
+# server_max_players = 50
+# server_game_mode   = ""
+# server_room_token  = ""
 "#;

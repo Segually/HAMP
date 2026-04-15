@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use crate::defs::packet::pack_string;
+use crate::server::game_server::generator::{PlacedObject, WorldGenerator, WorldTemplate};
 
 // ── Position / rotation types ─────────────────────────────────────────────
 
@@ -176,6 +177,10 @@ impl TrackedPlayer {
     }
 }
 
+fn placed_to_element(p: PlacedObject) -> ChunkElement {
+    ChunkElement { cell_x: p.cell_x, cell_z: p.cell_z, rotation: p.rotation, item_data: p.item_data }
+}
+
 // ── World state ───────────────────────────────────────────────────────────
 
 /// Complete state for a single managed world.
@@ -185,39 +190,73 @@ pub struct WorldState {
     pub default_zone: String,
     pub chunks: RwLock<HashMap<(i16, i16), Chunk>>,
     pub players: RwLock<HashMap<String, TrackedPlayer>>,
+    pub(crate) generator: WorldGenerator,
 }
 
 impl WorldState {
-    /// Creates a new world with a grid of blank chunks around the origin.
-    pub fn new(name: &str, grid_radius: i16) -> Self {
-        let zone = "Main".to_string();
+    /// Creates a new world using the given generation template.
+    ///
+    /// `grid_radius` pre-generates a square of chunks around the origin;
+    /// chunks outside this radius are generated lazily on first access.
+    pub fn new(name: &str, grid_radius: i16, template: WorldTemplate) -> Self {
+        let default_zone = template.zones.first()
+            .map(|z| z.name.clone())
+            .unwrap_or_else(|| "Main".to_string());
+
+        let generator = WorldGenerator::new(template);
         let mut chunks = HashMap::new();
+
         for x in -grid_radius..=grid_radius {
             for z in -grid_radius..=grid_radius {
-                chunks.insert((x, z), Chunk::blank(x, z, &zone));
+                let params = generator.chunk_params(&default_zone, x as i32, z as i32);
+                chunks.insert((x, z), Chunk {
+                    x,
+                    z,
+                    zone: default_zone.clone(),
+                    biome:       params.biome,
+                    floor_rot:   params.floor_rot,
+                    floor_tex:   params.floor_tex,
+                    floor_model: 0,
+                    mob_a:       params.mob_a,
+                    mob_b:       params.mob_b,
+                    elements:    params.elements.into_iter().map(placed_to_element).collect(),
+                });
             }
         }
 
         Self {
             name: name.to_string(),
-            default_zone: zone,
+            default_zone,
             chunks: RwLock::new(chunks),
             players: RwLock::new(HashMap::new()),
+            generator,
         }
     }
 
-    /// Returns the wire-encoded chunk at (x, z), generating a blank one if missing.
+    /// Returns the wire-encoded chunk at (x, z), generating one if missing.
     pub fn get_chunk_wire(&self, x: i16, z: i16) -> Vec<u8> {
         let chunks = self.chunks.read().unwrap();
         if let Some(chunk) = chunks.get(&(x, z)) {
-            chunk.to_wire()
-        } else {
-            drop(chunks);
-            // Auto-generate blank chunk on first access
-            let chunk = Chunk::blank(x, z, &self.default_zone);
-            let wire = chunk.to_wire();
-            self.chunks.write().unwrap().insert((x, z), chunk);
-            wire
+            return chunk.to_wire();
         }
+        drop(chunks);
+
+        // Lazy generation for chunks outside the pre-generated grid
+        let params = self.generator.chunk_params(&self.default_zone, x as i32, z as i32);
+        let chunk = Chunk {
+            x,
+            z,
+            zone:        self.default_zone.clone(),
+            biome:       params.biome,
+            floor_rot:   params.floor_rot,
+            floor_tex:   params.floor_tex,
+            floor_model: 0,
+            mob_a:       params.mob_a,
+            mob_b:       params.mob_b,
+            elements:    params.elements.into_iter().map(placed_to_element).collect(),
+        };
+        let wire = chunk.to_wire();
+        self.chunks.write().unwrap().insert((x, z), chunk);
+        wire
     }
 }

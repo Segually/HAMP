@@ -10,7 +10,6 @@ use crate::defs::packet::{Str16, craft_batch, to_hex_upper};
 use crate::defs::packet::ServerPacket;
 use crate::server::friend_server::packets_server::{FriendOffline, FriendOnline};
 use crate::server::friend_server::server_registry::RegisteredServer;
-use crate::server::game_server::dummy_world::DummyWorld;
 
 // ── Session connection ─────────────────────────────────────────────────────
 
@@ -107,8 +106,6 @@ pub struct SharedState {
     pub sessions: RwLock<HashMap<String, Arc<SessionConn>>>,
     /// Maps username → last-known world-state blob.
     pub world_states: RwLock<HashMap<String, Vec<u8>>>,
-    /// Admin-spawned dummy worlds (managed game sessions with auto-accept).
-    pub dummy_worlds: RwLock<HashMap<String, DummyWorld>>,
     /// Maps username → relay session port for every player currently in a relay
     /// session (both hosts and guests).  Used by JoinGrant to reuse an existing
     /// session instead of spawning a new one — e.g. when joining someone who is
@@ -127,7 +124,6 @@ impl SharedState {
         Arc::new(Self {
             sessions:              RwLock::new(HashMap::new()),
             world_states:          RwLock::new(HashMap::new()),
-            dummy_worlds:          RwLock::new(HashMap::new()),
             active_relay_sessions: RwLock::new(HashMap::new()),
             public_servers:        Arc::new(RwLock::new(Vec::new())),
             db,

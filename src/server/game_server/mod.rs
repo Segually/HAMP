@@ -2,9 +2,9 @@
 //
 // Two modes of operation:
 //
-//   Standalone (default):
-//     `run()` binds a single port, serves blank chunks from a `WorldState`,
-//     tracks player positions. This is the default when the binary starts.
+//   Standalone (`run()`):
+//     Binds a single port, serves world chunks from a `WorldState`,
+//     tracks player positions.
 //
 //   Relay (friend-server integration):
 //     `spawn_relay_session()` is called by the friend server's JoinGrant
@@ -16,9 +16,11 @@
 // Add a match arm in `handle_client`. Most relayed packets just need an
 // entry in the bulk-relay arm at the bottom.
 
-pub mod dummy_world;
+pub mod generator;
 pub mod packets_client;
 pub mod packets_server;
+pub mod persist;
+pub mod registry_client;
 pub mod world_state;
 
 use std::collections::HashMap;
@@ -46,6 +48,7 @@ use packets_server::{
     UniqueIds, ZoneChangeBroadcast, ZoneData, ZoneForGuest, ZoneRelayToHost,
 };
 use world_state::WorldState;
+use generator::WorldTemplate;
 
 // ── Per-session player ─────────────────────────────────────────────────────
 
@@ -103,6 +106,10 @@ impl Session {
         })
     }
 
+    pub(crate) fn player_count(&self) -> usize {
+        self.players.lock().unwrap().len()
+    }
+
     /// Shuts down the session: disconnects all players and unblocks the accept loop.
     pub fn stop(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
@@ -153,6 +160,44 @@ impl Session {
     }
 }
 
+
+/// Advance past one InventoryItem in `data` starting at `off`.
+/// Returns `(item_bytes, new_off)` or `None` if the data is truncated.
+///
+/// Wire format:
+///   i16(n_shorts)   + n_shorts  × [pack_string(key) + i16(val)]
+///   i16(n_strings)  + n_strings × [pack_string(key) + pack_string(val)]
+///   i16(n_ints)     + n_ints    × [pack_string(key) + i32(val)]
+fn read_inventory_item(data: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
+    let mut off = start;
+    macro_rules! need { ($n:expr) => { if off + $n > data.len() { return None; } } }
+    macro_rules! u16 { () => {{ need!(2); let v = u16::from_le_bytes([data[off], data[off+1]]); off += 2; v as usize }} }
+    macro_rules! skip_str { () => {{ let l = u16!(); need!(l); off += l; }} }
+
+    let n_shorts  = u16!();
+    for _ in 0..n_shorts  { skip_str!(); need!(2); off += 2; }
+    let n_strings = u16!();
+    for _ in 0..n_strings { skip_str!(); skip_str!(); }
+    let n_ints    = u16!();
+    for _ in 0..n_ints    { skip_str!(); need!(4); off += 4; }
+    Some((data[start..off].to_vec(), off))
+}
+
+/// Rewrite the zone string inside a stored OPD blob.
+///
+/// OPD layout: pos(8) + pos(8) + rot(8) + appearance(1) = 25-byte fixed header,
+/// followed immediately by pack_string(zone_name).
+fn opd_with_zone(opd: &[u8], zone: &str) -> Vec<u8> {
+    const HDR: usize = 25;
+    if opd.len() < HDR + 2 { return opd.to_vec(); }
+    let old_zone_len = u16::from_le_bytes([opd[HDR], opd[HDR + 1]]) as usize;
+    let after_old = HDR + 2 + old_zone_len;
+    let mut out = Vec::with_capacity(after_old + zone.len() + (opd.len().saturating_sub(after_old)));
+    out.extend_from_slice(&opd[..HDR]);
+    out.extend(pack_string(zone));
+    if after_old < opd.len() { out.extend_from_slice(&opd[after_old..]); }
+    out
+}
 
 // ── Per-client handler ─────────────────────────────────────────────────────
 
@@ -344,9 +389,9 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         let mut opd = Vec::new();
                         opd.extend_from_slice(pos_bytes);                    // at position
                         opd.extend_from_slice(pos_bytes);                    // to position (same)
-                        opd.extend_from_slice(&[0, 0, 0, 0, 0, 0, 100, 0]); // rotation: identity quat
-                        opd.push(body_slot);                                 // is_dead
-                        opd.extend(pack_string(""));                         // currently_using
+                        opd.extend_from_slice(&[0, 0, 0, 0, 0, 0, 100, 0]); // rotation: identity quat ×100
+                        opd.push(body_slot);                                 // appearance slot
+                        opd.extend(pack_string(&zone_name));                 // zone_name (client uses this for placement)
                         opd.extend(pack_string(""));                         // sitting_in_chair
                         opd.extend_from_slice(rest);                         // level + items + hp + creatures
 
@@ -774,11 +819,14 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             &PlayerGone { username: uid }, &old_zone, Some(uid.as_str()));
                     }
 
-                    // Update player zone tracker.
-                    // (Zone is NOT part of the OnlinePlayerData blob — it's
-                    // tracked separately and used for broadcast_zone filtering.)
+                    // Update player zone tracker and the stored OPD zone string
+                    // so late-joiners see the correct zone after a zone transition.
                     if let Some(p) = session.players.lock().unwrap().get(uid.as_str()) {
                         *p.zone.lock().unwrap() = zone_name.clone();
+                        let mut guard = p.initial_data.lock().unwrap();
+                        if let Some(ref od) = *guard {
+                            *guard = Some(opd_with_zone(od, &zone_name));
+                        }
                     }
 
                     // Broadcast zone change to everyone (the client uses this
@@ -854,35 +902,119 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── BUILD (0x20) ───────────────────────────────────────────────
-            // C→S: [validator:Str][Item][rot:u8][zone:Str][shorts×4][extra:Str]
-            // S→C: [Item][rot:u8][zone:Str][shorts×4][owner:Str][extra]
+            // C→S: [validator:Str][Item][rot:u8][zone:Str][Short×4 cx,cz,tx,tz][extra:Str]
+            // S→C: [Item][rot:u8][zone:Str][Short×4][owner:Str][extra]
             // DO NOT echo back to builder (client already placed it locally).
             0x20 => {
                 if let Some(ref uid) = player_id {
-                    let (_, off) = unpack_string(data, 10); // skip validator
-                    let mut pkt = vec![0x20u8];
-                    // Item + rot + zone + shorts
-                    let item_and_rest = &data[off..];
-                    // Find where shorts end to insert owner string.
-                    // Item is variable, rot is 1 byte, zone is Str, shorts is 8 bytes.
-                    // Simplest: relay everything after validator, append owner.
-                    // Actually Python strips validator, then appends owner before extra.
-                    // The exact layout matters for the S→C handler. For now, relay
-                    // everything after validator and append owner at the end.
-                    pkt.extend_from_slice(item_and_rest);
-                    session.broadcast(&pkt, Some(uid.as_str()));
+                    let (_, mut off) = unpack_string(data, 10); // skip validator
+                    if let Some((item_bytes, next)) = read_inventory_item(data, off) {
+                        off = next;
+                        if off < data.len() {
+                            let rotation = data[off]; off += 1;
+                            let (zone_str, next) = unpack_string(data, off); off = next;
+                            if off + 8 <= data.len() {
+                                let cx = i16::from_le_bytes([data[off],   data[off+1]]);
+                                let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
+                                let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
+                                let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
+                                let shorts_bytes = &data[off..off+8]; off += 8;
+                                let extra = &data[off..];
+
+                                // Broadcast S→C: Item + rot + zone + shorts×4 + owner + extra
+                                let mut pkt = vec![0x20u8];
+                                pkt.extend_from_slice(&item_bytes);
+                                pkt.push(rotation);
+                                pkt.extend(pack_string(&zone_str));
+                                pkt.extend_from_slice(shorts_bytes);
+                                pkt.extend(pack_string(uid));
+                                pkt.extend_from_slice(extra);
+                                session.broadcast(&pkt, Some(uid.as_str()));
+
+                                // Persist to WorldState in managed mode.
+                                if let SessionMode::Managed(ref ws) = session.mode {
+                                    use world_state::ChunkElement;
+                                    let mut chunks = ws.chunks.write().unwrap();
+                                    let chunk = chunks.entry((cx, cz)).or_insert_with(|| {
+                                        let params = ws.generator.chunk_params(&ws.default_zone, cx as i32, cz as i32);
+                                        world_state::Chunk {
+                                            x: cx, z: cz, zone: ws.default_zone.clone(),
+                                            biome: params.biome, floor_rot: params.floor_rot,
+                                            floor_tex: params.floor_tex, floor_model: 0,
+                                            mob_a: params.mob_a, mob_b: params.mob_b,
+                                            elements: params.elements.into_iter()
+                                                .map(|p| ChunkElement { cell_x: p.cell_x, cell_z: p.cell_z, rotation: p.rotation, item_data: p.item_data })
+                                                .collect(),
+                                        }
+                                    });
+                                    chunk.elements.push(ChunkElement {
+                                        cell_x: tx as u8, cell_z: tz as u8,
+                                        rotation, item_data: item_bytes,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             // ── REMOVE_OBJECT (0x21) ──────────────────────────────────────
-            // C→S: [validator:Str][zone:Str][shorts×4][rot:u8][Item][extra:Str]
-            // S→C: [zone:Str][shorts×4][rot:u8][Item][owner:Str]
+            // C→S: [validator:Str][zone:Str][Short×4 cx,cz,tx,tz][rot:u8][Item][extra:Str]
+            // S→C: [zone:Str][Short×4][rot:u8][Item][owner:Str]
             0x21 => {
                 if let Some(ref uid) = player_id {
-                    let (_, off) = unpack_string(data, 10); // skip validator
-                    let mut pkt = vec![0x21u8];
-                    pkt.extend_from_slice(&data[off..]);
-                    session.broadcast(&pkt, Some(uid.as_str()));
+                    let (_, mut off) = unpack_string(data, 10); // skip validator
+                    let (zone_str, next) = unpack_string(data, off); off = next;
+                    if off + 8 <= data.len() {
+                        let cx = i16::from_le_bytes([data[off],   data[off+1]]);
+                        let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
+                        let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
+                        let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
+                        let shorts_bytes = &data[off..off+8]; off += 8;
+                        let rotation = if off < data.len() { data[off] } else { 0 }; off += 1;
+                        if let Some((item_bytes, next)) = read_inventory_item(data, off) {
+                            off = next;
+                            let extra = &data[off..];
+
+                            // Broadcast S→C: zone + shorts×4 + rot + item + owner
+                            let mut pkt = vec![0x21u8];
+                            pkt.extend(pack_string(&zone_str));
+                            pkt.extend_from_slice(shorts_bytes);
+                            pkt.push(rotation);
+                            pkt.extend_from_slice(&item_bytes);
+                            pkt.extend(pack_string(uid));
+                            pkt.extend_from_slice(extra);
+                            session.broadcast(&pkt, Some(uid.as_str()));
+
+                            // Remove from WorldState in managed mode.
+                            if let SessionMode::Managed(ref ws) = session.mode {
+                                if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&(cx, cz)) {
+                                    // Remove by matching tile position + rotation + item.
+                                    // Match on position first; item_data as tiebreaker.
+                                    let target_x = tx as u8;
+                                    let target_z = tz as u8;
+                                    if let Some(pos) = chunk.elements.iter().position(|e| {
+                                        e.cell_x == target_x && e.cell_z == target_z
+                                            && e.rotation == rotation && e.item_data == item_bytes
+                                    }) {
+                                        chunk.elements.remove(pos);
+                                    } else {
+                                        // Fallback: match tile only (handles rotation mismatch)
+                                        if let Some(pos) = chunk.elements.iter().position(|e| {
+                                            e.cell_x == target_x && e.cell_z == target_z
+                                        }) {
+                                            chunk.elements.remove(pos);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Couldn't parse — fall back to raw relay
+                        let mut pkt = vec![0x21u8];
+                        pkt.extend_from_slice(&data[off..]);
+                        session.broadcast(&pkt, Some(uid.as_str()));
+                    }
                 }
             }
 
@@ -1363,15 +1495,96 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 // ── Standalone entry point ────────────────────────────────────────────────
 
 /// Starts a standalone managed game server on `cfg.game_port`.
-/// Serves a blank flat world and handles all connecting clients.
+/// Loads existing world state from `<world_data_dir>/world.hws` if present,
+/// otherwise generates a fresh world. Saves state every 5 minutes.
 pub fn run(cfg: &Config) {
     let addr = format!("{}:{}", cfg.host, cfg.game_port);
     let listener = TcpListener::bind(&addr)
         .unwrap_or_else(|e| panic!("Failed to bind game server to {}: {}", addr, e));
     println!("[GAME] Standalone game server listening on {} ...", addr);
 
-    let world = Arc::new(WorldState::new("World", 5));
-    let session = Session::new("World", SessionMode::Managed(Arc::clone(&world)));
+    let data_dir = std::path::PathBuf::from(&cfg.world_data_dir);
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        eprintln!("[GAME] Warning: could not create world_data_dir {}: {}", data_dir.display(), e);
+    }
+    let save_path = data_dir.join(persist::FILE_NAME);
+
+    let world = Arc::new(match persist::load(&save_path) {
+        Ok(ws) => {
+            let chunk_count = ws.chunks.read().unwrap().len();
+            println!("[GAME] Loaded world from {} ({} chunks)", save_path.display(), chunk_count);
+            ws
+        }
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                println!("[GAME] No save file found — generating fresh world");
+            } else {
+                eprintln!("[GAME] Failed to load world ({}), generating fresh", e);
+            }
+            WorldState::new("World", 5, WorldTemplate::default())
+        }
+    });
+
+    // SIGTERM / SIGINT handler: save world and exit cleanly.
+    {
+        let world_ref = Arc::clone(&world);
+        let path = save_path.clone();
+        ctrlc::set_handler(move || {
+            println!("[GAME] Shutdown signal — saving world...");
+            match persist::save(&world_ref, &path) {
+                Ok(())  => println!("[GAME] World saved, exiting."),
+                Err(e)  => eprintln!("[GAME] Save failed on shutdown: {}", e),
+            }
+            std::process::exit(0);
+        }).unwrap_or_else(|e| eprintln!("[GAME] Warning: could not install signal handler: {}", e));
+    }
+
+    // Background save thread: persists the full world every 5 minutes.
+    {
+        let world_ref = Arc::clone(&world);
+        let path = save_path.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(300));
+                match persist::save(&world_ref, &path) {
+                    Ok(()) => println!("[GAME] World saved to {}", path.display()),
+                    Err(e) => eprintln!("[GAME] Save failed: {}", e),
+                }
+            }
+        });
+    }
+
+    let session = Session::new(&cfg.server_name, SessionMode::Managed(Arc::clone(&world)));
+
+    // Optionally register with a friend server.
+    if !cfg.friend_registry_host.is_empty()
+        && cfg.friend_registry_port != 0
+        && !cfg.friend_registry_secret.is_empty()
+    {
+        let public_ip = if cfg.public_ip.is_empty() { cfg.host.clone() } else { cfg.public_ip.clone() };
+        let room_token = if cfg.server_room_token.is_empty() {
+            session.room_token.clone()
+        } else {
+            cfg.server_room_token.clone()
+        };
+        registry_client::spawn(
+            registry_client::RegistryParams {
+                registry_addr: format!("{}:{}", cfg.friend_registry_host, cfg.friend_registry_port),
+                secret:        cfg.friend_registry_secret.clone(),
+                server_name:   cfg.server_name.clone(),
+                server_desc:   cfg.server_desc.clone(),
+                server_desc2:  cfg.server_desc2.clone(),
+                server_desc3:  cfg.server_desc3.clone(),
+                server_desc4:  cfg.server_desc4.clone(),
+                max_players:   cfg.server_max_players,
+                game_mode:     cfg.server_game_mode.clone(),
+                public_ip,
+                game_port:     cfg.game_port,
+                room_token,
+            },
+            Arc::clone(&session),
+        );
+    }
 
     for incoming in listener.incoming() {
         match incoming {
@@ -1383,6 +1596,12 @@ pub fn run(cfg: &Config) {
             }
             Err(e) => eprintln!("[GAME] accept error: {}", e),
         }
+    }
+
+    // Final save on clean shutdown (reached if `incoming` iterator ends).
+    match persist::save(&world, &save_path) {
+        Ok(()) => println!("[GAME] Final world save to {}", save_path.display()),
+        Err(e) => eprintln!("[GAME] Final save failed: {}", e),
     }
 }
 
@@ -1425,45 +1644,3 @@ pub fn spawn_relay_session(room_token: String, cfg: &Config) -> Option<u16> {
     None
 }
 
-/// Spawns a managed-mode game session on a dynamic port with server-owned world state.
-/// Used by the admin-spawned world system.
-///
-/// Returns `(port, session_handle)` or `None` if no port is available.
-/// The caller can later call `session.stop()` to shut everything down.
-pub fn spawn_managed_session(room_token: String, cfg: &Config, world: Arc<WorldState>) -> Option<(u16, Arc<Session>)> {
-    for port in cfg.game_port..=cfg.game_port_max {
-        let addr = format!("{}:{}", cfg.host, port);
-        if let Ok(listener) = TcpListener::bind(&addr) {
-            // Set a short accept timeout so the loop can check the shutdown flag.
-            listener.set_nonblocking(false).ok();
-
-            let session = Session::new(room_token.clone(), SessionMode::Managed(world));
-            *session.listen_addr.lock().unwrap() = listener.local_addr().ok();
-            let accept_session = Arc::clone(&session);
-            println!("[GAME] Managed session '{}' → port {}", room_token, port);
-            std::thread::spawn(move || {
-                // Use a timeout so we can poll the shutdown flag.
-                listener.set_nonblocking(false).ok();
-                for incoming in listener.incoming() {
-                    if accept_session.shutdown.load(Ordering::Relaxed) { break; }
-                    match incoming {
-                        Ok(stream) => {
-                            let peer = stream.peer_addr()
-                                .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
-                            let sess = Arc::clone(&accept_session);
-                            std::thread::spawn(move || handle_client(stream, peer, sess));
-                        }
-                        Err(e) => {
-                            if accept_session.shutdown.load(Ordering::Relaxed) { break; }
-                            eprintln!("[GAME] accept error on port {}: {}", port, e);
-                        }
-                    }
-                }
-                println!("[GAME] Accept loop for '{}' exited", accept_session.room_token);
-            });
-            return Some((port, session));
-        }
-    }
-    eprintln!("[GAME] No free port in {}–{}", cfg.game_port, cfg.game_port_max);
-    None
-}

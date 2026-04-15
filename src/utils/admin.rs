@@ -14,8 +14,6 @@
 //   recv <hex>            — feed a raw client packet to the spoofed user
 //   reports               — list all player reports
 //   db <base64-sql>       — run a raw SQL query against the database
-//   startworld            — host a managed world on the spoofed user
-//   stopworld             — stop the spoofed user's world and boot players
 //   restart               — kill the server process (systemd will restart it)
 //
 // Adding a new command
@@ -147,8 +145,6 @@ fn dispatch(cmd: &str, args: &str, adm: &mut AdminSession, state: &Arc<SharedSta
         "fixdb"      => cmd_fixdb(state),
         "reports"    => cmd_reports(state),
         "db"         => cmd_db(state, args),
-        "startworld" => cmd_startworld(adm, state, args),
-        "stopworld"  => cmd_stopworld(adm, state),
         "restart"    => cmd_restart(),
         "help"       => cmd_help(),
         "exit"       => cmd_exit(adm),
@@ -409,30 +405,6 @@ fn cmd_reports(state: &SharedState) -> String {
     out
 }
 
-fn cmd_startworld(adm: &mut AdminSession, state: &SharedState, args: &str) -> String {
-    // If spoofed, host the world under the spoofed user so their friends can join.
-    // If not spoofed, a name is required and a standalone bot is created.
-    let arg = args.trim();
-    match &adm.spoofed_user {
-        Some(user) => {
-            crate::server::game_server::dummy_world::start_world_for(user, state, &adm.cfg)
-        }
-        None => {
-            if arg.is_empty() {
-                return "[!] Not spoofed — usage: startworld <name>\n".to_string();
-            }
-            crate::server::game_server::dummy_world::start_world(arg, state, &adm.cfg)
-        }
-    }
-}
-
-fn cmd_stopworld(adm: &AdminSession, state: &SharedState) -> String {
-    match &adm.spoofed_user {
-        Some(user) => crate::server::game_server::dummy_world::stop_world(user, state),
-        None => "[!] Not spoofed — nothing to stop.\n".to_string(),
-    }
-}
-
 fn cmd_help() -> String {
     "\
 Commands:\n\
@@ -449,8 +421,6 @@ Commands:\n\
   fixdb                 — clean up stale pending requests\n\
   reports               — list all player reports\n\
   db <base64-sql>       — run a raw SQL query against the database\n\
-  startworld            — host a managed world on the spoofed user\n\
-  stopworld             — stop the spoofed user's world and boot players\n\
   restart               — kill the server (systemd will restart it)\n\
   exit                  — close this admin session\n\
 ".to_string()

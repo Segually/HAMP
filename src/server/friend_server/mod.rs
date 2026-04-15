@@ -64,30 +64,13 @@ fn strip_world_update(data: &[u8]) -> Vec<u8> {
 // ── Public server list builders ────────────────────────────────────────────
 
 /// S→C 0x1D — full public server list.
-fn build_server_list(servers: &[RegisteredServer], cfg: &Config) -> Vec<u8> {
-    // TODO: remove dummy once real servers are registered.
-    let dummy_icon = load_icon("Irradiated Badlands", cfg);
-    let dummy = RegisteredServer {
-        name:        "Irradiated Badlands".to_string(),
-        desc1:       "Sike! Rubidium isn't out yet.".to_string(),
-        desc2:       "Standby for real servers soon...".to_string(),
-        desc3:       String::new(),
-        desc4:       String::new(),
-        n_online:    67,
-        max_players: 67,
-        game_mode:   "PVP".to_string(),
-        public_ip:   "127.0.0.1".to_string(),
-        port:        0,
-        room_token:  "test".to_string(),
-        icon_bytes:  dummy_icon,
-    };
-    let count = (servers.len() + 1).min(255) as u8;
+fn build_server_list(servers: &[RegisteredServer]) -> Vec<u8> {
+    let count = servers.len().min(255) as u8;
     let mut p = vec![0x1Du8, count];
     for s in servers {
         p.extend(s.to_packet_entry());
     }
-    p.extend(dummy.to_packet_entry());
-    p
+    return p;
 }
 
 /// Load a PNG from `{icons_dir}/{safe_name}.png`, returning `None` if missing
@@ -435,22 +418,17 @@ pub fn handle_packet(
                     .map(|p| p.username)
                     .unwrap_or_else(|| target_raw.clone());
 
-                // Check if target is a dummy world — auto-accept instead of relaying.
-                if state.dummy_worlds.read().unwrap().contains_key(&t) {
-                    crate::server::game_server::dummy_world::handle_auto_accept(user, &t, state, cfg);
-                } else {
-                    let target_conn = state.sessions.read().unwrap()
-                        .get(&t)
-                        .map(Arc::clone);
-                    if let Some(tc) = target_conn {
-                        tc.send_pkt(
-                            &RelayJoinReq {
-                                from:       Str16::new(user),
-                                extra_byte: 0x00,
-                            },
-                            "S->C [RELAY_JOIN_REQ]",
-                        );
-                    }
+                let target_conn = state.sessions.read().unwrap()
+                    .get(&t)
+                    .map(Arc::clone);
+                if let Some(tc) = target_conn {
+                    tc.send_pkt(
+                        &RelayJoinReq {
+                            from:       Str16::new(user),
+                            extra_byte: 0x00,
+                        },
+                        "S->C [RELAY_JOIN_REQ]",
+                    );
                 }
             }
         }
@@ -677,7 +655,7 @@ pub fn handle_packet(
         ClientPacket::RequestServerList => {
             if current_user.is_some() {
                 let servers = state.public_servers.read().unwrap();
-                conn.send(2, &build_server_list(&servers, cfg), "S->C [SERVER_LIST]");
+                conn.send(2, &build_server_list(&servers), "S->C [SERVER_LIST]");
             }
         }
 
