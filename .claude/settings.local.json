@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(wc -l D:/Projects/HAMultiplayer/HAMP/src/server/game_server/*.rs D:/Projects/HAMultiplayer/HAMP/src/defs/*.rs D:/Projects/HAMultiplayer/HAMP/docs/decomp/GameServerReceiver.OnReceive.cs)",
-      "Bash(cargo build:*)"
-    ]
-  }
-}
