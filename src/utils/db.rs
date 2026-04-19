@@ -83,7 +83,7 @@ impl Db {
             Some((r, m)) => (r.unwrap_or_else(|| username.to_string()), m != 0),
             None         => (username.to_string(), false),
         };
-        if is_mod { format!("<i>{}★</i>", raw) } else { raw }
+        if is_mod { format!("<i>{} ★</i>", raw) } else { raw }
     }
 
     #[allow(dead_code)]

@@ -201,10 +201,12 @@ pub struct InteriorData {
 /// Item-backed zones (houses, caves, dimensions) carry `interior: Some(…)`.
 pub struct ZoneEntry {
     pub interior: Option<InteriorData>,
+    pub worldgen: bool,
 }
 
 impl ZoneEntry {
-    pub fn plain() -> Self { Self { interior: None } }
+    pub fn plain() -> Self { Self { interior: None, worldgen: true } }
+    pub fn interior(data: InteriorData) -> Self { Self { interior: Some(data), worldgen: false } }
 }
 
 // ── World state ───────────────────────────────────────────────────────────
@@ -214,7 +216,7 @@ impl ZoneEntry {
 pub struct WorldState {
     pub name: String,
     pub default_zone: String,
-    pub chunks: RwLock<HashMap<(i16, i16), Chunk>>,
+    pub chunks: RwLock<HashMap<String, HashMap<(i16, i16), Chunk>>>,
     pub players: RwLock<HashMap<String, TrackedPlayer>>,
     pub baskets: BasketStore,
     /// All known zones keyed by name. Pre-populated from the template; extended at runtime
@@ -234,12 +236,12 @@ impl WorldState {
             .unwrap_or_else(|| "overworld".to_string());
 
         let generator = WorldGenerator::new(template);
-        let mut chunks = HashMap::new();
+        let mut zone_grid: HashMap<(i16, i16), Chunk> = HashMap::new();
 
         for x in -grid_radius..=grid_radius {
             for z in -grid_radius..=grid_radius {
                 let params = generator.chunk_params(&default_zone, x as i32, z as i32);
-                chunks.insert((x, z), Chunk {
+                zone_grid.insert((x, z), Chunk {
                     x,
                     z,
                     zone: default_zone.clone(),
@@ -253,6 +255,9 @@ impl WorldState {
                 });
             }
         }
+
+        let mut chunks = HashMap::new();
+        chunks.insert(default_zone.clone(), zone_grid);
 
         // Pre-populate zone registry from template zone names.
         let zone_map: HashMap<String, ZoneEntry> = generator.template_zones()
@@ -270,20 +275,29 @@ impl WorldState {
         }
     }
 
-    /// Returns the wire-encoded chunk at (x, z), generating one if missing.
-    pub fn get_chunk_wire(&self, x: i16, z: i16) -> Vec<u8> {
-        let chunks = self.chunks.read().unwrap();
-        if let Some(chunk) = chunks.get(&(x, z)) {
-            return chunk.to_wire();
+    /// Returns the wire-encoded chunk at (zone, x, z), generating one if missing.
+    /// Interior zones are never lazily generated; only the default zone supports lazy gen.
+    pub fn get_chunk_wire(&self, zone: &str, x: i16, z: i16) -> Vec<u8> {
+        {
+            let chunks = self.chunks.read().unwrap();
+            if let Some(m) = chunks.get(zone) {
+                if let Some(chunk) = m.get(&(x, z)) {
+                    return chunk.to_wire();
+                }
+            }
         }
-        drop(chunks);
 
-        // Lazy generation for chunks outside the pre-generated grid
-        let params = self.generator.chunk_params(&self.default_zone, x as i32, z as i32);
+        let worldgen = self.zones.read().unwrap()
+            .get(zone).map_or(false, |e| e.worldgen);
+        if !worldgen {
+            return Chunk::blank(x, z, zone).to_wire();
+        }
+
+        let params = self.generator.chunk_params(zone, x as i32, z as i32);
         let chunk = Chunk {
             x,
             z,
-            zone:        self.default_zone.clone(),
+            zone:        zone.to_string(),
             biome:       params.biome,
             floor_rot:   params.floor_rot,
             floor_tex:   params.floor_tex,
@@ -293,7 +307,10 @@ impl WorldState {
             elements:    params.elements.into_iter().map(placed_to_element).collect(),
         };
         let wire = chunk.to_wire();
-        self.chunks.write().unwrap().insert((x, z), chunk);
+        self.chunks.write().unwrap()
+            .entry(zone.to_string())
+            .or_default()
+            .insert((x, z), chunk);
         wire
     }
 }

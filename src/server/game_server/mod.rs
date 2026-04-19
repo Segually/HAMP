@@ -294,13 +294,23 @@ fn read_inventory_item(data: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
 
 /// Extracts `(shack_id, item_id)` from wire-format InventoryItem bytes.
 ///
-/// Looks for int key `"shack_id = *long* "` and string key `"item_id"`.
+/// InventoryItem strings are UTF-16LE length-prefixed (same as all game strings).
 /// Returns None if either key is absent (not a shack item).
 fn parse_shack_info(data: &[u8]) -> Option<(i32, String)> {
     let mut off = 0usize;
     macro_rules! need { ($n:expr) => { if off + $n > data.len() { return None; } } }
-    macro_rules! read_u16 { () => {{ need!(2); let v = u16::from_le_bytes([data[off], data[off+1]]); off += 2; v as usize }} }
-    macro_rules! read_str { () => {{ let l = read_u16!(); need!(l); let s = String::from_utf8_lossy(&data[off..off+l]).into_owned(); off += l; s }} }
+    macro_rules! read_u16 { () => {{
+        need!(2);
+        let v = u16::from_le_bytes([data[off], data[off+1]]);
+        off += 2;
+        v as usize
+    }} }
+    macro_rules! read_str { () => {{
+        let (s, next) = unpack_string(data, off);
+        if next == off { return None; }
+        off = next;
+        s
+    }} }
 
     let n_shorts = read_u16!();
     for _ in 0..n_shorts {
@@ -321,7 +331,7 @@ fn parse_shack_info(data: &[u8]) -> Option<(i32, String)> {
         need!(4);
         let val = i32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]]);
         off += 4;
-        if key == "shack_id = *long* " { shack_id = Some(val); }
+        if key == "shack_id" { shack_id = Some(val); }
     }
     Some((shack_id?, item_id?))
 }
@@ -725,7 +735,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
                         match session.mode {
                             SessionMode::Managed(ref world) => {
-                                let wire = world.get_chunk_wire(x, z);
+                                let wire = world.get_chunk_wire(&zone_name, x, z);
                                 let _ = write_payload(&mut stream, 2, &wire);
                             }
                             SessionMode::Relay => {
@@ -1265,10 +1275,11 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                 if let SessionMode::Managed(ref ws) = session.mode {
                                     use world_state::ChunkElement;
                                     let mut chunks = ws.chunks.write().unwrap();
-                                    let chunk = chunks.entry((cx, cz)).or_insert_with(|| {
-                                        let params = ws.generator.chunk_params(&ws.default_zone, cx as i32, cz as i32);
+                                    let zone_map = chunks.entry(zone_str.clone()).or_default();
+                                    let chunk = zone_map.entry((cx, cz)).or_insert_with(|| {
+                                        let params = ws.generator.chunk_params(&zone_str, cx as i32, cz as i32);
                                         world_state::Chunk {
-                                            x: cx, z: cz, zone: ws.default_zone.clone(),
+                                            x: cx, z: cz, zone: zone_str.clone(),
                                             biome: params.biome, floor_rot: params.floor_rot,
                                             floor_tex: params.floor_tex, floor_model: 0,
                                             mob_a: params.mob_a, mob_b: params.mob_b,
@@ -1284,15 +1295,13 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                     drop(chunks);
                                     // Register zone for any item that carries a shack_id.
                                     if let Some((shack_id, _)) = parse_shack_info(&item_bytes) {
-                                        let zone_name = format!("shack9072{}", shack_id);
-                                        ws.zones.write().unwrap().insert(zone_name, world_state::ZoneEntry {
-                                            interior: Some(world_state::InteriorData {
-                                                item_bytes,
-                                                rotation,
-                                                cx, cz, tx, tz,
+                                        let zone_name = format!("shack{}", shack_id);
+                                        ws.zones.write().unwrap().insert(zone_name,
+                                            world_state::ZoneEntry::interior(world_state::InteriorData {
+                                                item_bytes, rotation, cx, cz, tx, tz,
                                                 outer_zone: zone_str.clone(),
-                                            }),
-                                        });
+                                            })
+                                        );
                                     }
                                 }
                             }
@@ -1331,7 +1340,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
                             // Remove from WorldState in managed mode.
                             if let SessionMode::Managed(ref ws) = session.mode {
-                                if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&(cx, cz)) {
+                                if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&zone_str).and_then(|m| m.get_mut(&(cx, cz))) {
                                     // Remove by matching tile position + rotation + item.
                                     // Match on position first; item_data as tiebreaker.
                                     let target_x = tx as u8;
@@ -1395,7 +1404,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
                                     // Replace in WorldState for managed mode.
                                     if let SessionMode::Managed(ref ws) = session.mode {
-                                        if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&(cx, cz)) {
+                                        if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&zone_str).and_then(|m| m.get_mut(&(cx, cz))) {
                                             let tx8 = tx as u8;
                                             let tz8 = tz as u8;
                                             // Remove old element (exact match; tile-only fallback)
@@ -1922,7 +1931,7 @@ pub fn run(cfg: &Config) {
 
     let mut ws = match persist::load(&save_path) {
         Ok(ws) => {
-            let chunk_count = ws.chunks.read().unwrap().len();
+            let chunk_count: usize = ws.chunks.read().unwrap().values().map(|m| m.len()).sum();
             println!("[GAME] Loaded world from {} ({} chunks)", save_path.display(), chunk_count);
             ws
         }

@@ -131,8 +131,9 @@ fn write_state<W: Write>(state: &WorldState, w: &mut W) -> io::Result<()> {
 
     // Chunks
     let chunks = state.chunks.read().unwrap();
-    wu32(w, chunks.len() as u32)?;
-    for chunk in chunks.values() {
+    let total: u32 = chunks.values().map(|m| m.len() as u32).sum();
+    wu32(w, total)?;
+    for chunk in chunks.values().flat_map(|m| m.values()) {
         wi16(w, chunk.x)?;
         wi16(w, chunk.z)?;
         wstr(w, &chunk.zone)?;
@@ -220,7 +221,7 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
 
     // Chunks
     let chunk_count = ru32(&mut r)? as usize;
-    let mut chunks = HashMap::with_capacity(chunk_count);
+    let mut chunks: HashMap<String, HashMap<(i16, i16), Chunk>> = HashMap::new();
     for _ in 0..chunk_count {
         let x          = ri16(&mut r)?;
         let z          = ri16(&mut r)?;
@@ -241,7 +242,8 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
                 item_data: rbytes(&mut r)?,
             });
         }
-        chunks.insert((x, z), Chunk { x, z, zone, biome, floor_rot, floor_tex, floor_model, mob_a, mob_b, elements });
+        chunks.entry(zone.clone()).or_default()
+            .insert((x, z), Chunk { x, z, zone, biome, floor_rot, floor_tex, floor_model, mob_a, mob_b, elements });
     }
 
     // Containers (reserved — skip count, nothing to read)
