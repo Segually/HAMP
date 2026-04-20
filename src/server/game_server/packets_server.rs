@@ -193,6 +193,7 @@ impl ServerPacket for ZoneData<'_> {
     fn to_payload(&self) -> Vec<u8> {
         let mut p = vec![0x0Bu8];
         p.push(0x01); // flag = 1 (zone data follows)
+        p.push(0x00); // second_byte — read by case 10 before ProcessIncomingZoneData
         p.extend(pack_string(self.zone_name));
         // ZoneData::UnpackFromWeb body
         match &self.interior {
@@ -210,7 +211,7 @@ impl ServerPacket for ZoneData<'_> {
                 p.extend_from_slice(&[0u8; 6]);
                 p.push(0x00); // rotation
                 p.extend_from_slice(&[0u8; 8]); // 4 × i16 coords
-                p.extend(pack_string("")); // outer_item_zone
+                p.extend(pack_string(self.zone_name)); // outer_item_zone = self for plain zones
             }
         }
         p.extend_from_slice(&0i16.to_le_bytes()); // timer_count = 0
