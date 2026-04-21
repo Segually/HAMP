@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::utils::db::Db;
 use crate::defs::packet::{Str16, craft_batch, write_payload, to_hex_upper, MAX_FRAME_PAYLOAD};
@@ -125,6 +125,8 @@ pub struct SharedState {
     pub public_servers: Arc<RwLock<Vec<RegisteredServer>>>,
     /// The database — shared with every handler thread.
     pub db: Arc<Db>,
+    /// Active WebSocket API sessions: username → channel for pushing JSON messages.
+    pub ws_sessions: RwLock<HashMap<String, mpsc::Sender<String>>>,
 }
 
 impl SharedState {
@@ -134,6 +136,7 @@ impl SharedState {
             world_states:          RwLock::new(HashMap::new()),
             active_relay_sessions: RwLock::new(HashMap::new()),
             public_servers:        Arc::new(RwLock::new(Vec::new())),
+            ws_sessions:           RwLock::new(HashMap::new()),
             db,
         })
     }

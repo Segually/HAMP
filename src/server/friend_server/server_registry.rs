@@ -1,29 +1,28 @@
-// server_registry.rs — external game server registry.
+// server_registry.rs — external game server registry (friend server side).
 //
-// External game servers (potentially on separate machines) open a persistent
-// TCP connection here to register themselves and stream player-count updates.
-// The friend server maintains a live list from these connections; the public
-// server list (S→C 0x1D) is built directly from it.
+// External game servers open a persistent TCP connection here to register
+// themselves and stream player-count updates.  The connection is now
+// bidirectional: the friend server can also answer RPC requests from the
+// game server (e.g. display-name lookups) and push control messages.
 //
-// Internal wire protocol — all numbers little-endian:
-//   Strings: [u16 byte_len][UTF-8 bytes]
+// Internal wire protocol — all numbers little-endian, strings: u16 len + UTF-8:
 //
 //   Game server → friend server:
 //     0x01  Auth:     [Str(secret)]
-//     0x02  Register: [Str(name)][Str(desc1)][Str(desc2)][Str(desc3)][Str(desc4)]
-//                     [i16(max_players)][Str(game_mode)][Str(public_ip)][u16(port)]
-//                     [Str(room_token)]
+//     0x02  Register: [Str(name)][Str(desc1..4)][i16(max_players)]
+//                     [Str(game_mode)][Str(public_ip)][u16(port)][Str(room_token)]
 //     0x03  Update:   [i16(n_online)]
-//     0x04  Ping      (no payload)
+//     0x04  Ping      (keepalive)
+//     0x05  RpcReq:   [u16(request_id)][u8(method)][...payload]
+//           method 0x01  GetDisplayName: [Str(username)]
 //
 //   Friend server → game server:
 //     0x01  Auth OK
-//     0x00  Auth fail (server then closes connection)
-//     0x04  Pong      (echoed in response to 0x04 Ping)
-//
-// On disconnect the server entry is removed from the list immediately.
-// A 20-second read timeout is set after registration so silently-dropped
-// connections are cleaned up quickly (the client pings every 15 seconds).
+//     0x00  Auth fail
+//     0x04  Pong
+//     0x05  RpcResp:  [u16(request_id)][...payload]
+//           (GetDisplayName): [Str(display_name)]
+//     0x06  Push:     [u8(push_type)][...payload]   (reserved, none defined yet)
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -31,6 +30,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use crate::utils::config::Config;
+use crate::defs::state::SharedState;
 
 // ── Registered server entry ────────────────────────────────────────────────
 
@@ -43,24 +43,14 @@ pub struct RegisteredServer {
     pub desc4:       String,
     pub max_players: i16,
     pub game_mode:   String,
-    /// Public IP the client should connect to.
     pub public_ip:   String,
-    /// Game server port.
     pub port:        u16,
-    /// Room token sent in the JumpToGame packet so the game server can
-    /// identify the session.
     pub room_token:  String,
     pub n_online:    i16,
-    /// Raw PNG bytes served in response to S→C 0x1F icon requests.
-    /// `None` → client receives has_icon=0 and shows its default icon.
     pub icon_bytes:  Option<Vec<u8>>,
 }
 
 impl RegisteredServer {
-    /// Serialize this entry into the bytes the game expects inside a 0x1D
-    /// server-list packet:
-    ///   Str16(name) Str16(desc1) Str16(desc2) Str16(desc3) Str16(desc4)
-    ///   i16(n_online) i16(max_players) Str16(game_mode)
     pub fn to_packet_entry(&self) -> Vec<u8> {
         use crate::defs::packet::pack_string;
         let mut b = Vec::new();
@@ -103,16 +93,15 @@ fn read_str(s: &mut TcpStream) -> Option<String> {
     String::from_utf8(buf).ok()
 }
 
+
 // ── Per-connection handler ─────────────────────────────────────────────────
 
-/// Drives one game-server connection. Returns the registered server name so
-/// the caller can remove it from the list on disconnect (or `None` if the
-/// server never fully registered).
 fn handle_connection(
     stream: &mut TcpStream,
     addr:   std::net::SocketAddr,
     secret: &str,
     list:   &Arc<RwLock<Vec<RegisteredServer>>>,
+    state:  &Arc<SharedState>,
 ) -> Option<String> {
     // ── Auth ──────────────────────────────────────────────────────────────
     if read_u8(stream)? != 0x01 {
@@ -151,23 +140,22 @@ fn handle_connection(
         port,
         room_token,
         n_online:   0,
-        icon_bytes: None, // icon served from icons_dir on the friend server
+        icon_bytes: None,
     };
 
     list.write().unwrap().push(server);
     println!("[REGISTRY] '{}' registered (max {} players, port {})", name, max_players, port);
 
-    // Heartbeat timeout: if no message arrives within 20 s the connection is
-    // considered dead and the server entry will be removed.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
 
-    // ── Update loop ───────────────────────────────────────────────────────
+    // ── Message loop ──────────────────────────────────────────────────────
     loop {
         let msg = match read_u8(stream) {
             Some(v) => v,
             None    => break,
         };
         match msg {
+            // Player-count update.
             0x03 => {
                 let n = match read_i16(stream) {
                     Some(v) => v,
@@ -178,11 +166,46 @@ fn handle_connection(
                     s.n_online = n;
                 }
             }
+
+            // Keepalive ping — echo pong.
             0x04 => {
-                // Ping — echo back a pong so the client knows we're alive.
                 if stream.write_all(&[0x04]).is_err() { break; }
                 let _ = stream.flush();
             }
+
+            // RPC request.
+            0x05 => {
+                let req_id = match read_u16(stream) {
+                    Some(v) => v,
+                    None    => break,
+                };
+                let method = match read_u8(stream) {
+                    Some(v) => v,
+                    None    => break,
+                };
+                match method {
+                    // GetDisplayName
+                    0x01 => {
+                        let username = match read_str(stream) {
+                            Some(v) => v,
+                            None    => break,
+                        };
+                        let display = state.db.get_display_name(&username);
+                        let b = display.as_bytes();
+                        let mut buf = vec![0x05u8];
+                        buf.extend_from_slice(&req_id.to_le_bytes());
+                        buf.extend_from_slice(&(b.len() as u16).to_le_bytes());
+                        buf.extend_from_slice(b);
+                        if stream.write_all(&buf).is_err() { break; }
+                        if stream.flush().is_err() { break; }
+                    }
+                    _ => {
+                        eprintln!("[REGISTRY] '{}' sent unknown RPC method 0x{method:02X}", name);
+                        break;
+                    }
+                }
+            }
+
             _ => break,
         }
     }
@@ -192,9 +215,7 @@ fn handle_connection(
 
 // ── Listener ──────────────────────────────────────────────────────────────
 
-/// Spawns the registry listener thread. Blocks until the listener binds, then
-/// returns immediately — the actual accept loop runs on a background thread.
-pub fn run(cfg: &Config, list: Arc<RwLock<Vec<RegisteredServer>>>) {
+pub fn run(cfg: &Config, list: Arc<RwLock<Vec<RegisteredServer>>>, state: Arc<SharedState>) {
     if cfg.registry_secret.is_empty() || cfg.registry_port == 0 {
         println!("[REGISTRY] Disabled (set registry_port and registry_secret to enable)");
         return;
@@ -221,9 +242,10 @@ pub fn run(cfg: &Config, list: Arc<RwLock<Vec<RegisteredServer>>>) {
                 .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
             let list   = Arc::clone(&list);
             let secret = secret.clone();
+            let state  = Arc::clone(&state);
             std::thread::spawn(move || {
                 let mut stream = stream;
-                let name = handle_connection(&mut stream, peer, &secret, &list);
+                let name = handle_connection(&mut stream, peer, &secret, &list, &state);
                 if let Some(ref n) = name {
                     list.write().unwrap().retain(|s| s.name != *n);
                     println!("[REGISTRY] '{}' disconnected — removed from server list", n);

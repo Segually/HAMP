@@ -1,5 +1,6 @@
 // friend_server.rs — friend-list / social server (port configurable).
 
+pub mod api;
 pub mod packets_client;
 pub mod packets_server;
 pub mod server_registry;
@@ -423,6 +424,15 @@ pub fn handle_packet(
                         "S->C [RELAY_PM]",
                     );
                 }
+                // Also push to any open API WebSocket session.
+                let ws_payload = format!(
+                    r#"{{"from":{},"message":{}}}"#,
+                    serde_json::to_string(user).unwrap_or_default(),
+                    serde_json::to_string(&message).unwrap_or_default(),
+                );
+                if let Some(tx) = state.ws_sessions.read().unwrap().get(&t) {
+                    let _ = tx.send(ws_payload);
+                }
             }
         }
 
@@ -796,7 +806,8 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
 
 pub fn run(cfg: &Config, state: Arc<SharedState>) {
     // Start the external game-server registry listener (no-op if unconfigured).
-    server_registry::run(cfg, Arc::clone(&state.public_servers));
+    server_registry::run(cfg, Arc::clone(&state.public_servers), Arc::clone(&state));
+    api::run(cfg, Arc::clone(&state));
 
     let addr = format!("{}:{}", cfg.host, cfg.friend_port);
     let listener = TcpListener::bind(&addr)

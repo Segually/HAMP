@@ -34,6 +34,10 @@ pub struct Config {
     /// Set to an empty string to disable the terminal entirely.
     pub terminal_password: String,
 
+    /// TCP port for the HTTP REST API.  Set to 0 to disable.
+    /// WebSocket connections are served on the same port via HTTP upgrade.
+    pub api_port: u16,
+
     // ── Public server registry ─────────────────────────────────────────────
     /// TCP port that external game servers connect to for registry.
     /// Set to 0 to disable the registry listener.
@@ -142,6 +146,7 @@ impl Default for Config {
             public_ip:     String::new(),
             terminal_port:     7006,
             terminal_password: String::new(),
+            api_port:          0,
             registry_port:     7004,
             registry_secret:   String::new(),
             db_path:       "friend_server.db".to_string(),
@@ -239,6 +244,12 @@ terminal_port = 7006
 
 # Password required to log in. Leave empty ("") to disable the terminal.
 terminal_password = ""
+
+# ── REST API ────────────────────────────────────────────────────────────────
+# HTTP port for the friend-server REST API.  Set to 0 (or omit) to disable.
+# Auth: HTTP Basic — username:token (the token issued at registration).
+# WebSocket connections upgrade on the same port: ws://host:port/api/ws?token=<jwt>
+# api_port = 7008
 
 # ── Public server registry ──────────────────────────────────────────────────
 # Port that external game servers connect to for registry.

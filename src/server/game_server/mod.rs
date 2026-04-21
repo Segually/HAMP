@@ -378,7 +378,7 @@ fn opd_with_using(opd: &[u8], using_str: &str) -> Vec<u8> {
 
 // ── Per-client handler ─────────────────────────────────────────────────────
 
-fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc<Session>) {
+fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc<Session>, registry: Option<registry_client::RegistryHandle>) {
     let mut player_id: Option<String> = None;
     let mut read_buf = [0u8; 65536];
     let mut accum: Vec<u8> = Vec::new();
@@ -632,14 +632,22 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
                         // Delayed sync: wait 2s then broadcast + reciprocal sync.
                         let sess = Arc::clone(&session);
-                        let uid_owned = uid.clone();
-                        let opd_owned = opd;
+                        let uid_owned  = uid.clone();
+                        let opd_owned  = opd;
                         let zone_owned = zone_name.clone();
+                        let reg_owned  = registry.clone();
                         std::thread::spawn(move || {
                             std::thread::sleep(std::time::Duration::from_secs(1));
 
+                            let get_display = |name: &str| -> String {
+                                reg_owned.as_ref()
+                                    .and_then(|r| r.get_display_name(name))
+                                    .unwrap_or_else(|| name.to_string())
+                            };
+
                             // 1. Broadcast this player to everyone in the same zone.
-                            let spawn_pkt = PlayerNearby { username: &uid_owned, display: &uid_owned, opd: &opd_owned }.to_payload();
+                            let my_display = get_display(&uid_owned);
+                            let spawn_pkt = PlayerNearby { username: &uid_owned, display: &my_display, opd: &opd_owned }.to_payload();
                             sess.broadcast_zone(&spawn_pkt, &zone_owned, Some(uid_owned.as_str()));
 
                             // 2. Send existing same-zone players' data to this newcomer.
@@ -654,7 +662,8 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                 })
                                 .collect();
                             for (name, init) in &existing {
-                                sess.send_to(&uid_owned, &PlayerNearby { username: name, display: name, opd: init }.to_payload());
+                                let disp = get_display(name);
+                                sess.send_to(&uid_owned, &PlayerNearby { username: name, display: &disp, opd: init }.to_payload());
                             }
                             // For each existing player that has a basket open, send
                             // 0x27 so the newcomer's AnyoneUsing (field+48) is set.
@@ -1191,8 +1200,11 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             .get(uid.as_str())
                             .and_then(|p| p.initial_data.lock().unwrap().clone());
                         if let Some(init) = init {
+                            let disp = registry.as_ref()
+                                .and_then(|r| r.get_display_name(uid))
+                                .unwrap_or_else(|| uid.to_string());
                             session.broadcast_zone(
-                                &PlayerNearby { username: uid, display: uid, opd: &init },
+                                &PlayerNearby { username: uid, display: &disp, opd: &init },
                                 &zone_name, Some(uid.as_str()));
                         }
                     }
@@ -2126,6 +2138,8 @@ pub fn run(cfg: &Config) {
     LOG_PACKETS.store(cfg.log_packets, std::sync::atomic::Ordering::Relaxed);
     let session = Session::new(&cfg.server_name, SessionMode::Managed(Arc::clone(&world)), cfg.pvp_enabled, cfg.log_packets);
 
+    let mut registry_handle: Option<registry_client::RegistryHandle> = None;
+
     // Optionally register with a friend server.
     if !cfg.friend_registry_host.is_empty()
         && cfg.friend_registry_port != 0
@@ -2137,7 +2151,7 @@ pub fn run(cfg: &Config) {
         } else {
             cfg.server_room_token.clone()
         };
-        registry_client::spawn(
+        registry_handle = registry_client::spawn(
             registry_client::RegistryParams {
                 registry_addr: format!("{}:{}", cfg.friend_registry_host, cfg.friend_registry_port),
                 secret:        cfg.friend_registry_secret.clone(),
@@ -2162,7 +2176,8 @@ pub fn run(cfg: &Config) {
                 let peer = stream.peer_addr()
                     .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
                 let sess = Arc::clone(&session);
-                std::thread::spawn(move || handle_client(stream, peer, sess));
+                let reg  = registry_handle.clone();
+                std::thread::spawn(move || handle_client(stream, peer, sess, reg));
             }
             Err(e) => eprintln!("[GAME] accept error: {}", e),
         }
@@ -2201,7 +2216,7 @@ pub fn spawn_relay_session(room_token: String, cfg: &Config) -> Option<u16> {
                             let peer = stream.peer_addr()
                                 .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
                             let sess = Arc::clone(&accept_session);
-                            std::thread::spawn(move || handle_client(stream, peer, sess));
+                            std::thread::spawn(move || handle_client(stream, peer, sess, None));
                         }
                         Err(e) => {
                             if accept_session.shutdown.load(Ordering::Relaxed) { break; }
