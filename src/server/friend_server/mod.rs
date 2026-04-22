@@ -430,7 +430,7 @@ pub fn handle_packet(
                     serde_json::to_string(user).unwrap_or_default(),
                     serde_json::to_string(&message).unwrap_or_default(),
                 );
-                if let Some(tx) = state.ws_sessions.read().unwrap().get(&t) {
+                if let Some(tx) = state.ws_sessions.read().unwrap().get(user) {
                     let _ = tx.send(ws_payload);
                 }
             }

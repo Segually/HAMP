@@ -142,8 +142,9 @@ fn dispatch(mut req: Request, api: &Arc<ApiState>) {
     let (code, body) = match (req.method(), url.as_str()) {
         (Method::Post, "/api/login")    => post_login(&mut req, api),
         (Method::Get,  "/api/validate") => get_validate(&req, api),
-        (Method::Get,  "/api/friends")  => get_friends(&req, api),
-        (Method::Post, "/api/message")  => post_message(&mut req, api),
+        (Method::Get,  "/api/friends")        => get_friends(&req, api),
+        (Method::Post, "/api/friend_request") => post_friend_request(&mut req, api),
+        (Method::Post, "/api/message")        => post_message(&mut req, api),
         (Method::Get,  "/api/servers")  => get_servers(api),
         _ => (404, r#"{"error":"not found"}"#.to_string()),
     };
@@ -351,21 +352,73 @@ fn get_friends(req: &Request, api: &ApiState) -> (u16, String) {
         None    => return err(401, "unauthorized"),
     };
 
-    let friends  = api.state.db.get_friends(&username);
     let sessions = api.state.sessions.read().unwrap();
 
-    let items: Vec<String> = friends.iter().map(|f| {
-        let display = api.state.db.get_display_name(f);
+    // status 0 = friend, 1 = inbound request, 2 = outbound request
+    let mut items: Vec<String> = Vec::new();
+
+    for f in api.state.db.get_friends(&username) {
+        let display = api.state.db.get_display_name(&f);
         let online  = sessions.contains_key(f.as_str());
-        format!(
-            r#"{{"username":{},"display":{},"online":{}}}"#,
-            serde_json::to_string(f).unwrap_or_default(),
+        items.push(format!(
+            r#"{{"username":{},"display":{},"online":{},"status":0}}"#,
+            serde_json::to_string(&f).unwrap_or_default(),
             serde_json::to_string(&display).unwrap_or_default(),
             online,
-        )
-    }).collect();
+        ));
+    }
+    for f in api.state.db.get_pending_inbound(&username) {
+        let display = api.state.db.get_display_name(&f);
+        items.push(format!(
+            r#"{{"username":{},"display":{},"online":false,"status":1}}"#,
+            serde_json::to_string(&f).unwrap_or_default(),
+            serde_json::to_string(&display).unwrap_or_default(),
+        ));
+    }
+    for f in api.state.db.get_pending_outbound(&username) {
+        let display = api.state.db.get_display_name(&f);
+        items.push(format!(
+            r#"{{"username":{},"display":{},"online":false,"status":2}}"#,
+            serde_json::to_string(&f).unwrap_or_default(),
+            serde_json::to_string(&display).unwrap_or_default(),
+        ));
+    }
 
     (200, format!(r#"{{"friends":[{}]}}"#, items.join(",")))
+}
+
+// ── POST /api/friend_request ───────────────────────────────────────────────
+
+fn post_friend_request(req: &mut Request, api: &ApiState) -> (u16, String) {
+    let sender = match bearer_auth(req, api) {
+        Some(u) => u,
+        None    => return err(401, "unauthorized"),
+    };
+
+    let body = match read_body(req) {
+        Some(s) => s,
+        None    => return err(400, "could not read body"),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v)  => v,
+        Err(_) => return err(400, "invalid JSON"),
+    };
+
+    let to_raw = match v["to"].as_str() {
+        Some(s) => s.to_string(),
+        None    => return err(400, "missing field: to"),
+    };
+
+    let target = match api.state.db.get_player(&to_raw) {
+        Some(p) => p.username,
+        None    => return err(404, "user not found"),
+    };
+
+    if !api.state.db.add_friend_request(&sender, &target) {
+        return err(409, "request already exists or already friends");
+    }
+
+    (200, r#"{"ok":true}"#.to_string())
 }
 
 // ── POST /api/message ──────────────────────────────────────────────────────
@@ -437,9 +490,12 @@ fn get_servers(api: &ApiState) -> (u16, String) {
 
     let items: Vec<String> = servers.iter().map(|s| {
         format!(
-            r#"{{"name":{},"desc":{},"players":{},"max_players":{},"game_mode":{}}}"#,
+            r#"{{"name":{},"desc_1":{},"desc_2":{},"desc_3":{},"desc_4":{},"players":{},"max_players":{},"game_mode":{}}}"#,
             serde_json::to_string(&s.name).unwrap_or_default(),
             serde_json::to_string(&s.desc1).unwrap_or_default(),
+            serde_json::to_string(&s.desc2).unwrap_or_default(),
+            serde_json::to_string(&s.desc3).unwrap_or_default(),
+            serde_json::to_string(&s.desc4).unwrap_or_default(),
             s.n_online,
             s.max_players,
             serde_json::to_string(&s.game_mode).unwrap_or_default(),
