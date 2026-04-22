@@ -205,7 +205,8 @@ fn run_loop(
         );
 
         // Reclaim the write_rx for the next reconnect attempt.
-        if let Ok(rx) = rx_return_rx.recv_timeout(Duration::from_secs(2)) {
+        // Writer sleeps up to 15 s between ticks; give it 20 s to exit.
+        if let Ok(rx) = rx_return_rx.recv_timeout(Duration::from_secs(20)) {
             write_rx_slot = Some(rx);
         }
 
@@ -357,6 +358,9 @@ fn run_session(
             }
         }
     }
+
+    // Wake the writer so it exits promptly instead of sleeping up to 15 s.
+    let _ = write_tx.send(OutMsg::Bytes(vec![]));
 
     Ok(())
 }
