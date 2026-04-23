@@ -1273,8 +1273,8 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── BUILD (0x20) ───────────────────────────────────────────────
-            // C→S: [validator:Str][Item][rot:u8][zone:Str][Short×4 cx,cz,tx,tz][extra:Str]
-            // S→C: [Item][rot:u8][zone:Str][Short×4][owner:Str][extra]
+            // C→S: [validator:Str][Item][rot:u8][zone:Str][Short×4 cx,cz,tx,tz][cache_key:Str]
+            // S→C: [Item][rot:u8][zone:Str][Short×4][owner:Str][cache_key]
             // DO NOT echo back to builder (client already placed it locally).
             0x20 => {
                 if let Some(ref uid) = player_id {
@@ -1415,14 +1415,15 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── REPLACE_BUILDABLE (0x22) ──────────────────────────────────
-            // C→S: [validator:Str][old_Item][new_Item][rot:u8][zone:Str][shorts×4][extra:Str]
-            // S→C: [old_Item][new_Item][rot:u8][zone:Str][shorts×4][owner:Str][extra]
+            // C→S: [validator:Str][new_Item][old_Item][rot:u8][zone:Str][shorts×4][cache_key:Str]
+            // S→C: [new_Item][old_Item][rot:u8][zone:Str][shorts×4][owner:Str][cache_key]
+            // (confirmed from SendReplaceBuildable: new_item packed first, old_element_item second)
             0x22 => {
                 if let Some(ref uid) = player_id {
                     let (_, mut off) = unpack_string(data, 10); // skip validator
-                    if let Some((old_item, next)) = read_inventory_item(data, off) {
+                    if let Some((new_item, next)) = read_inventory_item(data, off) {
                         off = next;
-                        if let Some((new_item, next)) = read_inventory_item(data, off) {
+                        if let Some((old_item, next)) = read_inventory_item(data, off) {
                             off = next;
                             if off < data.len() {
                                 let rotation = data[off]; off += 1;
@@ -1433,17 +1434,17 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                     let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
                                     let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
                                     let shorts_bytes = &data[off..off+8]; off += 8;
-                                    let extra = &data[off..];
+                                    let cache_key = &data[off..];
 
-                                    // S→C: old_Item + new_Item + rot + zone + shorts×4 + owner + extra
+                                    // S→C: new_Item + old_Item + rot + zone + shorts×4 + owner + cache_key
                                     let mut pkt = vec![0x22u8];
-                                    pkt.extend_from_slice(&old_item);
                                     pkt.extend_from_slice(&new_item);
+                                    pkt.extend_from_slice(&old_item);
                                     pkt.push(rotation);
                                     pkt.extend(pack_string(&zone_str));
                                     pkt.extend_from_slice(shorts_bytes);
                                     pkt.extend(pack_string(uid));
-                                    pkt.extend_from_slice(extra);
+                                    pkt.extend_from_slice(cache_key);
                                     session.broadcast(&pkt, Some(uid.as_str()));
 
                                     // Replace in WorldState for managed mode.
@@ -1451,7 +1452,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                         if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&zone_str).and_then(|m| m.get_mut(&(cx, cz))) {
                                             let tx8 = tx as u8;
                                             let tz8 = tz as u8;
-                                            // Remove old element (exact match; tile-only fallback)
+                                            // Remove old element (exact match on stored item; position fallback)
                                             let pos = chunk.elements.iter().position(|e| {
                                                 e.cell_x == tx8 && e.cell_z == tz8
                                                     && e.rotation == rotation && e.item_data == old_item
@@ -1459,7 +1460,6 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                                 e.cell_x == tx8 && e.cell_z == tz8
                                             }));
                                             if let Some(i) = pos { chunk.elements.remove(i); }
-                                            // Add new element
                                             use world_state::ChunkElement;
                                             chunk.elements.push(ChunkElement {
                                                 cell_x: tx8, cell_z: tz8,
