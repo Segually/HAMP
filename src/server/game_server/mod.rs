@@ -293,11 +293,46 @@ fn read_inventory_item(data: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
     Some((data[start..off].to_vec(), off))
 }
 
+/// Skips over a ZoneData::PackForWeb body and returns the offset after it.
+/// Format: [InventoryItem][rot:u8][coords:i16×4][outer_zone:str]
+///          [land_claim_count:i16] [per claim: [key:str][time:i16×6][user:str×3]]
+fn skip_zone_data_body(data: &[u8], start: usize) -> Option<usize> {
+    // Skip InventoryItem
+    let (_, mut off) = read_inventory_item(data, start)?;
+    // rotation byte + 4 × i16 coords (1 + 8 = 9 bytes)
+    if off + 9 > data.len() { return None; }
+    off += 9;
+    // outer_item_zone string
+    if off + 2 > data.len() { return None; }
+    off += 2 + u16::from_le_bytes([data[off], data[off+1]]) as usize;
+    if off > data.len() { return None; }
+    // land_claim_count
+    if off + 2 > data.len() { return None; }
+    let claim_count = u16::from_le_bytes([data[off], data[off+1]]) as usize;
+    off += 2;
+    for _ in 0..claim_count {
+        // claim_key string
+        if off + 2 > data.len() { return None; }
+        off += 2 + u16::from_le_bytes([data[off], data[off+1]]) as usize;
+        if off > data.len() { return None; }
+        // 6 × i16 (second/minute/hour/day/month/year)
+        if off + 12 > data.len() { return None; }
+        off += 12;
+        // user0, user1, user2 strings
+        for _ in 0..3 {
+            if off + 2 > data.len() { return None; }
+            off += 2 + u16::from_le_bytes([data[off], data[off+1]]) as usize;
+            if off > data.len() { return None; }
+        }
+    }
+    Some(off)
+}
+
 /// Extracts `(shack_id, item_id)` from wire-format InventoryItem bytes.
 ///
 /// InventoryItem strings are UTF-16LE length-prefixed (same as all game strings).
 /// Returns None if either key is absent (not a shack item).
-fn parse_shack_info(data: &[u8]) -> Option<(i32, String)> {
+pub(super) fn parse_shack_info(data: &[u8]) -> Option<(i32, String)> {
     let mut off = 0usize;
     macro_rules! need { ($n:expr) => { if off + $n > data.len() { return None; } } }
     macro_rules! read_u16 { () => {{
@@ -731,10 +766,10 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                 let _ = write_payload(&mut stream, 2, &ZoneData { zone_name: &zone, interior: None }.to_payload());
                             } else if let Some(ref hname) = host {
                                 // Guest → relay to host.
-                                // Host expects: Str(zone_name) + Str(requester) + u8(type) [+ Pos if type 2|3]
+                                // Host expects: [0x0A][requester:str][zone_name:str][type:u8][pos if type 2|3]
                                 let mut relay = vec![0x0Au8];
-                                relay.extend(pack_string(&zone_name));
-                                relay.extend(pack_string(uid));
+                                relay.extend(pack_string(uid));        // requester first
+                                relay.extend(pack_string(&zone_name)); // zone_name second
                                 relay.push(zone_type);
                                 if data.len() > off + 1 {
                                     relay.extend_from_slice(&data[off + 1..]);
@@ -765,6 +800,21 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             SessionMode::Managed(ref world) => {
                                 let wire = world.get_chunk_wire(&zone_name, x, z);
                                 let _ = write_payload(&mut stream, 2, &wire);
+                                // Replay any stored teleporter edits for this chunk.
+                                let chunks = world.chunks.read().unwrap();
+                                if let Some(chunk) = chunks.get(&zone_name).and_then(|m| m.get(&(x, z))) {
+                                    for ((tx, tz), (title, desc)) in &chunk.tele_data {
+                                        let mut pkt = vec![0x33u8];
+                                        pkt.extend(pack_string(title));
+                                        pkt.extend(pack_string(desc));
+                                        pkt.extend(pack_string(&zone_name));
+                                        pkt.extend_from_slice(&x.to_le_bytes());
+                                        pkt.extend_from_slice(&z.to_le_bytes());
+                                        pkt.extend_from_slice(&(*tx as i16).to_le_bytes());
+                                        pkt.extend_from_slice(&(*tz as i16).to_le_bytes());
+                                        let _ = write_payload(&mut stream, 2, &pkt);
+                                    }
+                                }
                             }
                             SessionMode::Relay => {
                                 let host = session.host.lock().unwrap().clone();
@@ -846,26 +896,32 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             }
 
             // ── HOST ZONE RESPONSE (0x0B) — relay mode only ──────────────
-            // The host sends: 0x0B + String(requester) + String(zone) + Byte(type) + ...
-            // We transform to guest format: 0x0B + Byte(1) + Byte(0) + String(zone) + rest
+            // Host format:  [requester:str][zone_name:str][type:u8][pos if 2|3][ZoneData body][trail]
+            // Guest format: [0x0B][flag=1][0][zone_name:str][ZoneData body][type:u8][pos if 2|3]
+            // Trail is excluded — ProcessIncomingZoneData doesn't read it.
             0x0B if matches!(session.mode, SessionMode::Relay) => {
                 if let Some(ref uid) = player_id {
                     let is_host = session.host.lock().unwrap()
                         .as_ref().map(|h| h == uid).unwrap_or(false);
                     if is_host {
                         let (requester, off) = unpack_string(data, 10);
-                        let (zone_name, zoff) = unpack_string(data, off);
+                        let (zone_name, mut zoff) = unpack_string(data, off);
                         if zoff < data.len() {
-                            let type_flag = data[zoff];
-                            // Skip optional position data if present
-                            let pos_skip = if (type_flag & 0xFE) == 2 { 12 } else { 0 };
-                            let zone_data_start = zoff + 1 + pos_skip;
+                            let type_flag = data[zoff]; zoff += 1;
+                            let pos_end = if (type_flag & 0xFE) == 2 {
+                                (zoff + 12).min(data.len())
+                            } else { zoff };
+                            let pos_bytes = &data[zoff..pos_end];
+                            // Find where ZoneData body ends (to drop the trailing zone-trail)
+                            let body_end = skip_zone_data_body(data, pos_end)
+                                .unwrap_or(data.len());
+                            let zone_body = &data[pos_end..body_end.min(data.len())];
 
-                            let mut out = vec![0x0Bu8, 0x01, 0x00]; // flag=1, sub=0
+                            let mut out = vec![0x0Bu8, 0x01, 0x00]; // flag=1, second=0
                             out.extend(pack_string(&zone_name));
-                            if zone_data_start < data.len() {
-                                out.extend_from_slice(&data[zone_data_start..]);
-                            }
+                            out.extend_from_slice(zone_body);
+                            out.push(type_flag);
+                            out.extend_from_slice(pos_bytes);
 
                             if !requester.is_empty() {
                                 session.send_to(&requester, &out);
@@ -1317,7 +1373,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                             elements: params.elements.into_iter()
                                                 .map(|p| ChunkElement { cell_x: p.cell_x, cell_z: p.cell_z, rotation: p.rotation, item_data: p.item_data })
                                                 .collect(),
-                                            land_claims: HashMap::new(),
+                                            land_claims: HashMap::new(), tele_data: HashMap::new(),
                                         }
                                     });
                                     chunk.elements.push(ChunkElement {
@@ -1449,23 +1505,36 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
                                     // Replace in WorldState for managed mode.
                                     if let SessionMode::Managed(ref ws) = session.mode {
-                                        if let Some(chunk) = ws.chunks.write().unwrap().get_mut(&zone_str).and_then(|m| m.get_mut(&(cx, cz))) {
-                                            let tx8 = tx as u8;
-                                            let tz8 = tz as u8;
-                                            // Remove old element (exact match on stored item; position fallback)
-                                            let pos = chunk.elements.iter().position(|e| {
-                                                e.cell_x == tx8 && e.cell_z == tz8
-                                                    && e.rotation == rotation && e.item_data == old_item
-                                            }).or_else(|| chunk.elements.iter().position(|e| {
-                                                e.cell_x == tx8 && e.cell_z == tz8
-                                            }));
-                                            if let Some(i) = pos { chunk.elements.remove(i); }
-                                            use world_state::ChunkElement;
-                                            chunk.elements.push(ChunkElement {
-                                                cell_x: tx8, cell_z: tz8,
-                                                rotation, item_data: new_item,
-                                            });
-                                        }
+                                        use world_state::ChunkElement;
+                                        let mut chunks = ws.chunks.write().unwrap();
+                                        let zone_map = chunks.entry(zone_str.clone()).or_default();
+                                        let chunk = zone_map.entry((cx, cz)).or_insert_with(|| {
+                                            let params = ws.generator.chunk_params(&zone_str, cx as i32, cz as i32);
+                                            world_state::Chunk {
+                                                x: cx, z: cz, zone: zone_str.clone(),
+                                                biome: params.biome, floor_rot: params.floor_rot,
+                                                floor_tex: params.floor_tex, floor_model: 0,
+                                                mob_a: params.mob_a, mob_b: params.mob_b,
+                                                elements: params.elements.into_iter()
+                                                    .map(|p| ChunkElement { cell_x: p.cell_x, cell_z: p.cell_z, rotation: p.rotation, item_data: p.item_data })
+                                                    .collect(),
+                                                land_claims: HashMap::new(), tele_data: HashMap::new(),
+                                            }
+                                        });
+                                        let tx8 = tx as u8;
+                                        let tz8 = tz as u8;
+                                        // Remove old element (exact match on stored item; position fallback)
+                                        let pos = chunk.elements.iter().position(|e| {
+                                            e.cell_x == tx8 && e.cell_z == tz8
+                                                && e.rotation == rotation && e.item_data == old_item
+                                        }).or_else(|| chunk.elements.iter().position(|e| {
+                                            e.cell_x == tx8 && e.cell_z == tz8
+                                        }));
+                                        if let Some(i) = pos { chunk.elements.remove(i); }
+                                        chunk.elements.push(ChunkElement {
+                                            cell_x: tx8, cell_z: tz8,
+                                            rotation, item_data: new_item,
+                                        });
                                     }
                                 }
                             }
@@ -1754,12 +1823,31 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 }
             }
 
-            // 0x33 FINISHED_EDITING_TELE — broadcast to all
+            // 0x33 FINISHED_EDITING_TELE — broadcast to all + persist edit
+            // C→S: [title:str][description:str][zone:str][cx:i16][cz:i16][tx:i16][tz:i16]
+            // (confirmed from SendFinishedEditingTeleporter decompilation)
             0x33 => {
                 if player_id.is_some() {
                     let mut pkt = vec![0x33u8];
                     pkt.extend_from_slice(&data[10..]);
                     session.broadcast(&pkt, None);
+
+                    if let SessionMode::Managed(ref ws) = session.mode {
+                        let mut off = 10;
+                        let (title, next) = unpack_string(data, off); off = next;
+                        let (desc,  next) = unpack_string(data, off); off = next;
+                        let (zone,  next) = unpack_string(data, off); off = next;
+                        if off + 8 <= data.len() {
+                            let cx = i16::from_le_bytes([data[off],   data[off+1]]);
+                            let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
+                            let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
+                            let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
+                            let mut chunks = ws.chunks.write().unwrap();
+                            if let Some(chunk) = chunks.get_mut(&zone).and_then(|m| m.get_mut(&(cx, cz))) {
+                                chunk.tele_data.insert((tx as u8, tz as u8), (title, desc));
+                            }
+                        }
+                    }
                 }
             }
 

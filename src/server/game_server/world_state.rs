@@ -125,6 +125,9 @@ pub struct Chunk {
     pub mob_b: String,
     pub elements: Vec<ChunkElement>,
     pub land_claims: HashMap<String, LandClaim>,
+    /// Teleporter edits: (cell_x, cell_z) → (title, description).
+    /// Replayed as 0x33 packets when the chunk is loaded by a new player.
+    pub tele_data: HashMap<(u8, u8), (String, String)>,
 }
 
 impl Chunk {
@@ -141,7 +144,7 @@ impl Chunk {
             mob_a: String::new(),
             mob_b: String::new(),
             elements: Vec::new(),
-            land_claims: HashMap::new(),
+            land_claims: HashMap::new(), tele_data: HashMap::new(),
         }
     }
 
@@ -312,7 +315,7 @@ impl WorldState {
                     mob_a:       params.mob_a,
                     mob_b:       params.mob_b,
                     elements:    params.elements.into_iter().map(placed_to_element).collect(),
-                    land_claims: HashMap::new(),
+                    land_claims: HashMap::new(), tele_data: HashMap::new(),
                 });
             }
         }
@@ -381,7 +384,7 @@ impl WorldState {
                 mob_a:       params.mob_a,
                 mob_b:       params.mob_b,
                 elements:    params.elements.into_iter().map(placed_to_element).collect(),
-                land_claims: HashMap::new(),
+                land_claims: HashMap::new(), tele_data: HashMap::new(),
             };
             let wire = chunk.to_wire();
             self.chunks.write().unwrap()
@@ -407,7 +410,7 @@ impl WorldState {
             mob_a:       params.mob_a,
             mob_b:       params.mob_b,
             elements:    params.elements.into_iter().map(placed_to_element).collect(),
-            land_claims: HashMap::new(),
+            land_claims: HashMap::new(), tele_data: HashMap::new(),
         };
         let wire = chunk.to_wire();
         self.chunks.write().unwrap()
@@ -437,7 +440,7 @@ impl WorldState {
                                 floor_tex: p.floor_tex, floor_model: 0,
                                 mob_a: p.mob_a, mob_b: p.mob_b,
                                 elements: p.elements.into_iter().map(placed_to_element).collect(),
-                                land_claims: HashMap::new(),
+                                land_claims: HashMap::new(), tele_data: HashMap::new(),
                             }
                         } else {
                             Chunk::blank(cx, cz, zone)

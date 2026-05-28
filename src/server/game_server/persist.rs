@@ -48,10 +48,12 @@ use std::sync::RwLock;
 
 use super::baskets::BasketStore;
 use super::generator::{BiomeWeights, WorldGenerator, WorldTemplate, ZoneConfig};
-use super::world_state::{Chunk, ChunkElement, LandClaim, WorldState, ZoneEntry};
+use super::parse_shack_info;
+use super::special_generators;
+use super::world_state::{Chunk, ChunkElement, InteriorData, LandClaim, WorldState, ZoneEntry};
 
 const MAGIC: &[u8; 4] = b"HAMP";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 pub const FILE_NAME: &str = "world.hws";
 
 // ── Low-level write helpers ───────────────────────────────────────────────
@@ -158,6 +160,13 @@ fn write_state<W: Write>(state: &WorldState, w: &mut W) -> io::Result<()> {
             wstr(w, &claim.user2)?;
             wu64(w, claim.expires_at_secs)?;
         }
+        wu16(w, chunk.tele_data.len() as u16)?;
+        for ((cx, cz), (title, desc)) in &chunk.tele_data {
+            wu8(w, *cx)?;
+            wu8(w, *cz)?;
+            wstr(w, title)?;
+            wstr(w, desc)?;
+        }
     }
 
     // Containers (reserved)
@@ -182,7 +191,7 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a HAMP world file"));
     }
     let version = ru8(&mut r)?;
-    if version != 1 && version != 2 && version != 3 {
+    if version < 1 || version > 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unsupported world file version {version}"),
@@ -254,20 +263,63 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
         if version >= 3 {
             let claim_count = ru16(&mut r)? as usize;
             for _ in 0..claim_count {
-                let claim_key      = rstr(&mut r)?;
-                let user0          = rstr(&mut r)?;
-                let user1          = rstr(&mut r)?;
-                let user2          = rstr(&mut r)?;
+                let claim_key       = rstr(&mut r)?;
+                let user0           = rstr(&mut r)?;
+                let user1           = rstr(&mut r)?;
+                let user2           = rstr(&mut r)?;
                 let expires_at_secs = ru64(&mut r)?;
                 land_claims.insert(claim_key.clone(), LandClaim { claim_key, user0, user1, user2, expires_at_secs });
             }
         }
+        let mut tele_data = std::collections::HashMap::new();
+        if version >= 4 {
+            let tele_count = ru16(&mut r)? as usize;
+            for _ in 0..tele_count {
+                let cx    = ru8(&mut r)?;
+                let cz    = ru8(&mut r)?;
+                let title = rstr(&mut r)?;
+                let desc  = rstr(&mut r)?;
+                tele_data.insert((cx, cz), (title, desc));
+            }
+        }
         chunks.entry(zone.clone()).or_default()
-            .insert((x, z), Chunk { x, z, zone, biome, floor_rot, floor_tex, floor_model, mob_a, mob_b, elements, land_claims });
+            .insert((x, z), Chunk { x, z, zone, biome, floor_rot, floor_tex, floor_model, mob_a, mob_b, elements, land_claims, tele_data });
     }
 
     // Containers (reserved — skip count, nothing to read)
     let _container_count = ru32(&mut r)?;
+
+    // Rebuild the interior zone registry from saved chunk elements.
+    // On first run this is done live as items are placed (0x20 handler).
+    // On restart the chunks are loaded but ws.zones only has template zones,
+    // so any shack zone entered after restart would return a blank interior.
+    let wgen = WorldGenerator::new(template.clone());
+    let mut zones: HashMap<String, ZoneEntry> = wgen.template_zones()
+        .map(|n| (n.to_string(), ZoneEntry::plain()))
+        .collect();
+
+    for (zone_name, zone_map) in &chunks {
+        for ((cx, cz), chunk) in zone_map {
+            for el in &chunk.elements {
+                if let Some((shack_id, item_id)) = parse_shack_info(&el.item_data) {
+                    let shack_zone = format!("shack{}", shack_id);
+                    let kind = special_generators::zone_kind_from_item_id(&item_id);
+                    zones.entry(shack_zone.clone()).or_insert_with(|| {
+                        ZoneEntry::interior(InteriorData {
+                            item_bytes: el.item_data.clone(),
+                            rotation:   el.rotation,
+                            cx: *cx,
+                            cz: *cz,
+                            tx: el.cell_x as i16,
+                            tz: el.cell_z as i16,
+                            outer_zone: zone_name.clone(),
+                            kind,
+                        })
+                    });
+                }
+            }
+        }
+    }
 
     Ok(WorldState {
         name:         "World".to_string(),
@@ -275,11 +327,7 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
         chunks:  RwLock::new(chunks),
         players: RwLock::new(HashMap::new()),
         baskets: BasketStore::new(),
-        zones: {
-            let wgen = WorldGenerator::new(template.clone());
-            let map = wgen.template_zones().map(|n| (n.to_string(), ZoneEntry::plain())).collect();
-            RwLock::new(map)
-        },
-        generator:    WorldGenerator::new(template),
+        zones:   RwLock::new(zones),
+        generator: WorldGenerator::new(template),
     })
 }
