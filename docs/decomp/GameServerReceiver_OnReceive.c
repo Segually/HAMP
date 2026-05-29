@@ -168,8 +168,8 @@ void GameServerReceiver::OnReceive(GameServerReceiver *this, Packet *incoming, M
   struct Startup__Class **v169; // x2
   GameServerConnector *Instance; // x8
   Connection *game_server_connection; // x0
-  int v172; // kr00_4
-  GameServerConnector *v173; // x19
+  int opcode_minus_1; // kr00_4
+  GameServerConnector *game_connector; // x19
   Object *v174; // x20
   MobControl *v175; // x8
   String *v176; // x19
@@ -1261,30 +1261,30 @@ void GameServerReceiver::OnReceive(GameServerReceiver *this, Packet *incoming, M
   zone = (String *)this; /*0x84fa58*/
   if ( !incoming ) /*0x84fa5c*/
     goto LABEL_1546; /*0x84fa5c*/
-  v172 = Packet::GetByte(incoming, nullptr) - 1; /*0x84fa74*/
+  opcode_minus_1 = Packet::GetByte(incoming, nullptr) - 1; /*0x84fa74*/
   v167._dateData = (uint64_t)&MethodInfo::UnityEngine::GameObject::GetComponent<Combatant>; /*0x84faa8*/
   v168 = (uint64_t)&MethodInfo::System::Collections::Generic::List<System::String>::Contains; /*0x84fb18*/
   v169 = &TypeInfo::Startup; /*0x84fb30*/
-  switch ( v172 )
+  switch ( opcode_minus_1 )
   {
     case 0:
-      if ( !byte_27E6C86 ) /*0x84fb80*/
+      if ( !byte_27E6C86 ) // // case 0x01: PING /*0x84fb80*/
       {
         sub_73C778( /*0x84fb90*/
           &TypeInfo::GameServerConnector,
           &MethodInfo::System::Collections::Generic::List<System::String>::Contains);
         byte_27E6C86 = 1; /*0x84fb98*/
       }
-      v173 = TypeInfo::GameServerConnector->static_fields->Instance; /*0x84fbb4*/
+      game_connector = TypeInfo::GameServerConnector->static_fields->Instance; /*0x84fbb4*/
       if ( !TypeInfo::System::DateTime->_1.cctor_finished_or_no_cctor ) /*0x84fbac*/
         j_il2cpp_runtime_class_init_0(TypeInfo::System::DateTime); /*0x84fbbc*/
       v167._dateData = System::DateTime::get_UtcNow(nullptr)._dateData; /*0x84fbc4*/
-      if ( !v173 ) /*0x84fbc8*/
+      if ( !game_connector ) /*0x84fbc8*/
         goto LABEL_1546; /*0x84fbc8*/
-      v173->last_server_ping = v167; /*0x84fbcc*/
+      game_connector->last_server_ping = v167; /*0x84fbcc*/
       return; /*0x84fbd0*/
     case 1:
-      v469 = TypeInfo::FriendServerSender->static_fields->Instance; /*0x8528d8*/
+      v469 = TypeInfo::FriendServerSender->static_fields->Instance;// // case 0x02: JOIN /*0x8528d8*/
       if ( !v469 ) /*0x8528dc*/
         goto LABEL_1546; /*0x8528dc*/
       v469->sending_request_of_some_sort = 0; /*0x8528e0*/
@@ -1549,7 +1549,7 @@ LABEL_965:
       GameServerSender::SendInitialPlayerData((GameServerSender *)v167._dateData, (MethodInfo *)v168); /*0x85688c*/
       return; /*0x856890*/
     case 3:
-      String = Packet::GetString(incoming, nullptr); /*0x851ea4*/
+      String = Packet::GetString(incoming, nullptr);// // case 0x04: UNKNOWN_0x04 /*0x851ea4*/
       v167._dateData = sub_73C88C(TypeInfo::Packet); /*0x851eb0*/
       if ( !v167._dateData ) /*0x851eb4*/
         goto LABEL_1546; /*0x851eb4*/
@@ -1627,7 +1627,7 @@ LABEL_965:
       v227 = Connection_priority__Enum_SUPER_HIGH; /*0x85200c*/
       goto LABEL_1396; /*0x852010*/
     case 4:
-      v167._dateData = Packet::GetShort(incoming, nullptr); /*0x8531c0*/
+      v167._dateData = Packet::GetShort(incoming, nullptr);// // case 0x05: UNKNOWN_0x05 /*0x8531c0*/
       dateData_low = SLOWORD(v167._dateData); /*0x8531e0*/
       if ( SLOWORD(v167._dateData) < 1 ) /*0x8531ec*/
         goto LABEL_568; /*0x8531ec*/
@@ -1830,7 +1830,7 @@ LABEL_568:
       Packet::GetByte(incoming, nullptr); /*0x855ce4*/
       return; /*0x855ce8*/
     case 5:
-      v568 = Packet::GetString(incoming, nullptr); /*0x853584*/
+      v568 = Packet::GetString(incoming, nullptr);// // case 0x06: CHAT /*0x853584*/
       v569 = Packet::GetString(incoming, nullptr); /*0x853594*/
       v570 = Packet::GetString(incoming, nullptr); /*0x8535a4*/
       if ( Packet::GetByte(incoming, nullptr) != 1 ) /*0x8535c8*/
@@ -1929,7 +1929,7 @@ LABEL_618:
         MethodInfo::System::Collections::Generic::List_1_T_::Enumerator<Friend>::Dispose);
       return; /*0x857c78*/
     case 6:
-      v420 = (Object *)Packet::GetString(incoming, nullptr); /*0x8521b0*/
+      v420 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x07: UNKNOWN_0x07 /*0x8521b0*/
       v421 = Packet::GetString(incoming, nullptr); /*0x8521c0*/
       Byte = Packet::GetByte(incoming, nullptr); /*0x8521d8*/
       if ( !byte_27E6C84 ) /*0x8521dc*/
@@ -2002,7 +2002,7 @@ LABEL_618:
       FriendServerSender::UpdateWorldString((FriendServerSender *)v167._dateData, (MethodInfo *)v168); /*0x856a94*/
       return; /*0x856a98*/
     case 7:
-      v489 = Packet::GetString(incoming, nullptr); /*0x852be8*/
+      v489 = Packet::GetString(incoming, nullptr);// // case 0x08: UNKNOWN_0x08 /*0x852be8*/
       v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x852bf4*/
       if ( !TypeInfo::PlayerData->static_fields->Instance ) /*0x852c08*/
         goto LABEL_1546; /*0x852c08*/
@@ -2114,7 +2114,7 @@ LABEL_1547:
       }
       goto LABEL_1553; /*0x856788*/
     case 8:
-      v495 = Packet::GetString(incoming, nullptr); /*0x852cdc*/
+      v495 = Packet::GetString(incoming, nullptr);// // case 0x09: GUARD_DIE_NOTIF /*0x852cdc*/
       v496 = Packet::GetString(incoming, nullptr); /*0x852ce8*/
       v497 = TypeInfo::CompanionController; /*0x852cec*/
       v498 = v496; /*0x852cf0*/
@@ -2129,7 +2129,7 @@ LABEL_1547:
       CompanionController::OnGuardDie((CompanionController *)v167._dateData, v495, v498, nullptr); /*0x852d20*/
       return; /*0x852d24*/
     case 9:
-      v608 = Packet::GetString(incoming, nullptr); /*0x853b94*/
+      v608 = Packet::GetString(incoming, nullptr);// // case 0x0A: REQ_ZONE /*0x853b94*/
       v609 = Packet::GetString(incoming, nullptr); /*0x853ba4*/
       v610 = Packet::GetByte(incoming, nullptr); /*0x853bb0*/
       v613 = v610; /*0x853bb8*/
@@ -2212,7 +2212,7 @@ LABEL_1077:
         goto LABEL_1546; /*0x85632c*/
       goto LABEL_1395; /*0x85632c*/
     case 10:
-      if ( !byte_27E6C85 ) /*0x853838*/
+      if ( !byte_27E6C85 ) // // case 0x0B: ZONE_DATA /*0x853838*/
       {
         sub_73C778( /*0x853844*/
           &TypeInfo::GameServerSender,
@@ -2254,7 +2254,7 @@ LABEL_1077:
       }
       return; /*0x853900*/
     case 11:
-      v311 = Packet::GetString(incoming, nullptr); /*0x8512c8*/
+      v311 = Packet::GetString(incoming, nullptr);// // case 0x0C: REQ_CHUNK /*0x8512c8*/
       v312 = Packet::GetString(incoming, nullptr); /*0x8512d8*/
       v313 = Packet::GetShort(incoming, nullptr); /*0x8512e8*/
       v314 = Packet::GetShort(incoming, nullptr); /*0x8512f4*/
@@ -2420,7 +2420,7 @@ LABEL_1077:
         ChunkData::SaveLandClaimChunkTimersToDisk(ChunkData, v319, nullptr, nullptr); /*0x8560fc*/
       return; /*0x856100*/
     case 12:
-      v427 = Packet::GetString(incoming, nullptr); /*0x8522fc*/
+      v427 = Packet::GetString(incoming, nullptr);// // case 0x0D: CHUNK_RESPONSE /*0x8522fc*/
       v428 = Packet::GetShort(incoming, nullptr); /*0x85230c*/
       v429 = Packet::GetShort(incoming, nullptr); /*0x852324*/
       v430 = TypeInfo::ChunkControl; /*0x852328*/
@@ -2737,7 +2737,7 @@ LABEL_1546:
       }
       return; /*0x856fa8*/
     case 16:
-      v381 = Packet::GetString(incoming, nullptr); /*0x851b0c*/
+      v381 = Packet::GetString(incoming, nullptr);// // case 0x11: POSITION /*0x851b0c*/
       v1019 = GameServerReceiver::UnpackPosition((GameServerReceiver *)v381, incoming, v382); /*0x851b10*/
       v1020 = GameServerReceiver::UnpackPosition(v383, incoming, v384); /*0x851b24*/
       v1031 = GameServerReceiver::UnpackRotation(v385, incoming, v386); /*0x851b38*/
@@ -2845,7 +2845,7 @@ LABEL_355:
       SharedCreature::SnapSpotterRotation((SharedCreature *)v167._dateData, v1031, nullptr); /*0x851d54*/
       return; /*0x851d58*/
     case 17:
-      v292 = Packet::GetShort(incoming, nullptr); /*0x850f78*/
+      v292 = Packet::GetShort(incoming, nullptr);// // case 0x12: UNKNOWN_0x12 /*0x850f78*/
       if ( v292 < 1 ) /*0x850f84*/
         goto LABEL_236; /*0x850f84*/
       do /*0x850fbc*/
@@ -2884,7 +2884,7 @@ LABEL_236:
       }
       return; /*0x851018*/
     case 18:
-      v507 = Packet::GetByte(incoming, nullptr); /*0x852df0*/
+      v507 = Packet::GetByte(incoming, nullptr);// // case 0x13: UNKNOWN_0x13 /*0x852df0*/
       if ( v507 ) /*0x852df4*/
       {
         if ( v507 == 1 ) /*0x852dfc*/
@@ -2918,7 +2918,7 @@ LABEL_236:
       }
       return; /*0x852dfc*/
     case 20:
-      v508 = Packet::GetString(incoming, nullptr); /*0x852e58*/
+      v508 = Packet::GetString(incoming, nullptr);// // case 0x15: START_TELEPORT /*0x852e58*/
       if ( !byte_27E6C84 ) /*0x852e5c*/
       {
         sub_73C778(&TypeInfo::GameServerInterface, v168); /*0x852e68*/
@@ -2930,7 +2930,7 @@ LABEL_236:
       GameServerInterface::StartTeleportPlayer((GameServerInterface *)v167._dateData, v508, (MethodInfo *)v169); /*0x852e90*/
       return; /*0x852e94*/
     case 21:
-      v624 = Packet::GetString(incoming, nullptr); /*0x853cf4*/
+      v624 = Packet::GetString(incoming, nullptr);// // case 0x16: END_TELEPORT /*0x853cf4*/
       v1025 = GameServerReceiver::UnpackPosition((GameServerReceiver *)v624, incoming, v625); /*0x853cf8*/
       if ( !byte_27E6C84 ) /*0x853d10*/
       {
@@ -2943,10 +2943,10 @@ LABEL_236:
       GameServerInterface::EndTeleportPlayer((GameServerInterface *)v167._dateData, v624, v1025, (MethodInfo *)v169); /*0x853d50*/
       return; /*0x853d54*/
     case 22:
-      GameServerReceiver::ReceiveDaynight(this, incoming, (MethodInfo *)&TypeInfo::Startup); /*0x853c08*/
+      GameServerReceiver::ReceiveDaynight(this, incoming, (MethodInfo *)&TypeInfo::Startup);// // case 0x17: UNKNOWN_0x17 /*0x853c08*/
       return; /*0x853c0c*/
     case 23:
-      v282 = Packet::GetString(incoming, nullptr); /*0x850e24*/
+      v282 = Packet::GetString(incoming, nullptr);// // case 0x18: CHANGE_EQUIP /*0x850e24*/
       v283 = Packet::GetByte(incoming, nullptr); /*0x850e34*/
       v285 = InventoryItem::UnpackFromWeb(incoming, nullptr); /*0x850e4c*/
       if ( !byte_27E6C84 ) /*0x850e50*/
@@ -2960,7 +2960,7 @@ LABEL_236:
       GameServerInterface::PlayerChangeEquip((GameServerInterface *)v167._dateData, v282, v283, v285, v284); /*0x850e8c*/
       return; /*0x850e90*/
     case 24:
-      v393 = Packet::GetString(incoming, nullptr); /*0x851d80*/
+      v393 = Packet::GetString(incoming, nullptr);// // case 0x19: UPDATE_CREATURES /*0x851d80*/
       v394 = Packet::GetShort(incoming, nullptr); /*0x851d98*/
       v167._dateData = sub_73C88C(TypeInfo::System::Collections::Generic::List<System::String>); /*0x851da4*/
       if ( !v167._dateData ) /*0x851da8*/
@@ -3012,7 +3012,7 @@ LABEL_367:
       }
       goto LABEL_1546; /*0x851e68*/
     case 26:
-      v167._dateData = (uint64_t)TypeInfo::PopupControl->static_fields->Instance; /*0x853fd4*/
+      v167._dateData = (uint64_t)TypeInfo::PopupControl->static_fields->Instance;// // case 0x1B: CONTAINER_RESP /*0x853fd4*/
       if ( !v167._dateData ) /*0x853fd8*/
         goto LABEL_1546; /*0x853fd8*/
       PopupControl::HideAll((PopupControl *)v167._dateData, nullptr); /*0x853fe4*/
@@ -3035,7 +3035,7 @@ LABEL_367:
       v380 = (BasketContents *)v643; /*0x854040*/
       goto LABEL_714; /*0x854040*/
     case 27:
-      v286 = Packet::GetString(incoming, nullptr); /*0x850eac*/
+      v286 = Packet::GetString(incoming, nullptr);// // case 0x1C: CLOSE_BASKET /*0x850eac*/
       v287 = Packet::GetLong(incoming, nullptr); /*0x850ec4*/
       v167._dateData = sub_73C88C(TypeInfo::BasketContents); /*0x850ed0*/
       if ( !v167._dateData ) /*0x850ed4*/
@@ -3059,7 +3059,7 @@ LABEL_367:
       v228 = v289; /*0x850f58*/
       goto LABEL_1396; /*0x850f5c*/
     case 28:
-      v167._dateData = (uint64_t)TypeInfo::PopupControl->static_fields->Instance; /*0x851a28*/
+      v167._dateData = (uint64_t)TypeInfo::PopupControl->static_fields->Instance;// // case 0x1D: UNKNOWN_0x1D /*0x851a28*/
       if ( !v167._dateData ) /*0x851a2c*/
         goto LABEL_1546; /*0x851a2c*/
       PopupControl::HideAll((PopupControl *)v167._dateData, nullptr); /*0x851a40*/
@@ -3096,7 +3096,7 @@ LABEL_714:
       inventory_ctr::SucceedOpenWorldContainer((inventory_ctr *)v167._dateData, v379, v380, nullptr); /*0x854044*/
       return; /*0x85404c*/
     case 29:
-      v309 = Packet::GetLong(incoming, nullptr); /*0x85125c*/
+      v309 = Packet::GetLong(incoming, nullptr);// // case 0x1E: UNKNOWN_0x1E /*0x85125c*/
       v167._dateData = sub_73C88C(TypeInfo::BasketContents); /*0x851268*/
       if ( !v167._dateData ) /*0x85126c*/
         goto LABEL_1546; /*0x85126c*/
@@ -3106,7 +3106,7 @@ LABEL_714:
       BasketContents::SaveToAllAsContainer(v310, v309, nullptr); /*0x851298*/
       return; /*0x85129c*/
     case 31:
-      v449 = InventoryItem::UnpackFromWeb(incoming, nullptr); /*0x852618*/
+      v449 = InventoryItem::UnpackFromWeb(incoming, nullptr);// // case 0x20: BUILD_FURNITURE /*0x852618*/
       v450 = Packet::GetByte(incoming, nullptr); /*0x852628*/
       v451 = Packet::GetString(incoming, nullptr); /*0x852638*/
       v452 = Packet::GetShort(incoming, nullptr); /*0x852648*/
@@ -3208,7 +3208,7 @@ LABEL_1068:
       }
       return; /*0x8575a0*/
     case 32:
-      zoneb = Packet::GetString(incoming, nullptr); /*0x851040*/
+      zoneb = Packet::GetString(incoming, nullptr);// // case 0x21: REMOVE_OBJECT /*0x851040*/
       v295 = Packet::GetShort(incoming, nullptr); /*0x851050*/
       v296 = Packet::GetShort(incoming, nullptr); /*0x851060*/
       v297 = Packet::GetShort(incoming, nullptr); /*0x851070*/
@@ -3303,7 +3303,7 @@ LABEL_252:
       }
       return; /*0x8574e4*/
     case 33:
-      v700 = InventoryItem::UnpackFromWeb(incoming, nullptr); /*0x854a70*/
+      v700 = InventoryItem::UnpackFromWeb(incoming, nullptr);// // case 0x22: REPLACE_BUILDABLE /*0x854a70*/
       v701 = InventoryItem::UnpackFromWeb(incoming, nullptr); /*0x854a80*/
       v702 = Packet::GetByte(incoming, nullptr); /*0x854a90*/
       v703 = Packet::GetString(incoming, nullptr); /*0x854aa0*/
@@ -3510,7 +3510,7 @@ LABEL_1440:
       }
       return;
     case 34:
-      zoned = Packet::GetString(incoming, nullptr); /*0x854910*/
+      zoned = Packet::GetString(incoming, nullptr);// // case 0x23: CHANGE_LAND_USER /*0x854910*/
       v993 = Packet::GetShort(incoming, nullptr); /*0x854920*/
       v690 = Packet::GetShort(incoming, nullptr); /*0x854930*/
       v691 = Packet::GetShort(incoming, nullptr); /*0x854940*/
@@ -3562,7 +3562,7 @@ LABEL_1440:
         nullptr);
       return; /*0x854a44*/
     case 35:
-      v335 = Packet::GetByte(incoming, nullptr); /*0x85159c*/
+      v335 = Packet::GetByte(incoming, nullptr);// // case 0x24: UNKNOWN_0x24 /*0x85159c*/
       v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x8515a8*/
       v336 = v335; /*0x8515ac*/
       v337 = (Object *)v167._dateData; /*0x8515b4*/
@@ -3697,7 +3697,7 @@ LABEL_871:
       }
       return; /*0x851730*/
     case 36:
-      v412 = TypeInfo::ZoneDataControl->static_fields->Instance; /*0x85201c*/
+      v412 = TypeInfo::ZoneDataControl->static_fields->Instance;// // case 0x25: UNKNOWN_0x25 /*0x85201c*/
       if ( !v412 ) /*0x852020*/
         goto LABEL_1546; /*0x852020*/
       v167._dateData = (uint64_t)v412->curr_zonedata_cache; /*0x852024*/
@@ -3725,7 +3725,7 @@ LABEL_871:
       ZoneDataControl::UpdateZoneItemOnChangedOutside((ZoneDataControl *)v167._dateData, nullptr); /*0x8520a0*/
       return; /*0x8520a4*/
     case 37:
-      v518 = Packet::GetShort(incoming, nullptr); /*0x85308c*/
+      v518 = Packet::GetShort(incoming, nullptr);// // case 0x26: LOGIN /*0x85308c*/
       v167._dateData = sub_73C88C(TypeInfo::System::Collections::Generic::List<System::String>); /*0x853098*/
       if ( !v167._dateData ) /*0x85309c*/
         goto LABEL_1546; /*0x85309c*/
@@ -3837,7 +3837,7 @@ LABEL_1094:
       GameServerSender::PackPosition((GameServerSender *)v167._dateData, v837, v1038, (MethodInfo *)v169); /*0x856498*/
       goto LABEL_1394; /*0x85649c*/
     case 38:
-      v415 = (Object *)Packet::GetString(incoming, nullptr); /*0x8520c0*/
+      v415 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x27: CLAIM_OBJECT /*0x8520c0*/
       v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x8520cc*/
       v416 = v167._dateData; /*0x8520d8*/
       if ( !byte_27E6C84 ) /*0x8520dc*/
@@ -3878,7 +3878,7 @@ LABEL_1094:
       }
       goto LABEL_1546; /*0x852178*/
     case 39:
-      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x854eb0*/
+      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr);// // case 0x28: RELEASE_INTERACTING /*0x854eb0*/
       v724 = (Object *)v167._dateData; /*0x854ebc*/
       if ( !byte_27E6C84 ) /*0x854ec0*/
       {
@@ -3918,7 +3918,7 @@ LABEL_1094:
       v419 = v167._dateData + 48; /*0x854f64*/
       goto LABEL_871; /*0x854f64*/
     case 40:
-      v325 = Packet::GetString(incoming, nullptr); /*0x8513d8*/
+      v325 = Packet::GetString(incoming, nullptr);// // case 0x29: REQ_MORE_IDS /*0x8513d8*/
       v167._dateData = sub_73C88C(TypeInfo::Packet); /*0x8513e4*/
       if ( !v167._dateData ) /*0x8513e8*/
         goto LABEL_1546; /*0x8513e8*/
@@ -4001,7 +4001,7 @@ LABEL_859:
       UnityEngine::Debug::Log((Object *)v334, nullptr); /*0x854e90*/
       return; /*0x854e98*/
     case 41:
-      v167._dateData = Packet::GetShort(incoming, nullptr); /*0x853c1c*/
+      v167._dateData = Packet::GetShort(incoming, nullptr);// // case 0x2A: UNIQUE_ID_SEND /*0x853c1c*/
       v617 = SLOWORD(v167._dateData); /*0x853c30*/
       if ( SLOWORD(v167._dateData) < 1 ) /*0x853c38*/
         goto LABEL_688; /*0x853c38*/
@@ -4043,7 +4043,7 @@ LABEL_688:
       v623->requesting_unique_ids = 0; /*0x853cd8*/
       return; /*0x853cdc*/
     case 42:
-      v722 = (Object *)Packet::GetString(incoming, nullptr); /*0x854e10*/
+      v722 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x2B: USED_UNIQUE_ID /*0x854e10*/
       v167._dateData = Packet::GetLong(incoming, nullptr); /*0x854e1c*/
       if ( !this->unique_ids_given_away ) /*0x854e28*/
         goto LABEL_1546; /*0x854e28*/
@@ -4072,7 +4072,7 @@ LABEL_856:
       v334 = "[unique id used up!]"; /*0x854e8c*/
       goto LABEL_859; /*0x854e8c*/
     case 44:
-      v265 = Packet::GetString(incoming, nullptr); /*0x850b88*/
+      v265 = Packet::GetString(incoming, nullptr);// // case 0x2D: MUSIC_BOX_NOTE /*0x850b88*/
       v266 = Packet::GetByte(incoming, nullptr); /*0x850b98*/
       v267 = Packet::GetShort(incoming, nullptr); /*0x850ba8*/
       v268 = Packet::GetShort(incoming, nullptr); /*0x850bb8*/
@@ -4187,7 +4187,7 @@ LABEL_1553:
       v987 = sub_73C8C0(); /*0x858384*/
       sub_73C864(v987, 0); /*0x85838c*/
     case 45:
-      v580 = Packet::GetString(incoming, nullptr); /*0x8537b8*/
+      v580 = Packet::GetString(incoming, nullptr);// // case 0x2E: REQ_TELE_PAGE /*0x8537b8*/
       v581 = Packet::GetByte(incoming, nullptr); /*0x8537c8*/
       if ( v581 == 1 ) /*0x8537d0*/
       {
@@ -4242,7 +4242,7 @@ LABEL_1553:
       GameServerSender::PackPageOfTeleporters((GameServerSender *)v167._dateData, v585, v584, v582); /*0x856c5c*/
       return; /*0x856c60*/
     case 46:
-      v167._dateData = (uint64_t)TypeInfo::PopupControl->static_fields->Instance; /*0x850838*/
+      v167._dateData = (uint64_t)TypeInfo::PopupControl->static_fields->Instance;// // case 0x2F: REQ_TELEPORTERS /*0x850838*/
       if ( !v167._dateData ) /*0x85083c*/
         goto LABEL_1546; /*0x85083c*/
       PopupControl::HideAll((PopupControl *)v167._dateData, nullptr); /*0x85084c*/
@@ -4470,7 +4470,7 @@ LABEL_1490:
       v167._dateData = sub_73C72C(v261); /*0x850ab0*/
       goto LABEL_200; /*0x850ab4*/
     case 47:
-      zonea = Packet::GetString(incoming, nullptr); /*0x850660*/
+      zonea = Packet::GetString(incoming, nullptr);// // case 0x30: TELE_SCREENSHOT /*0x850660*/
       v238 = Packet::GetShort(incoming, nullptr); /*0x850670*/
       v239 = Packet::GetShort(incoming, nullptr); /*0x850680*/
       v240 = Packet::GetShort(incoming, nullptr); /*0x850690*/
@@ -4524,7 +4524,7 @@ LABEL_150:
       }
       return; /*0x85074c*/
     case 48:
-      v349 = Packet::GetString(incoming, nullptr); /*0x85175c*/
+      v349 = Packet::GetString(incoming, nullptr);// // case 0x31: REQ_TELE_SCREENSHOT /*0x85175c*/
       v350 = Packet::GetString(incoming, nullptr); /*0x85176c*/
       v351 = Packet::GetShort(incoming, nullptr); /*0x85177c*/
       v352 = Packet::GetShort(incoming, nullptr); /*0x85178c*/
@@ -4606,7 +4606,7 @@ LABEL_317:
       v228 = v364; /*0x851a10*/
       goto LABEL_1396; /*0x851a14*/
     case 49:
-      v461 = (Object *)Packet::GetString(incoming, nullptr); /*0x852764*/
+      v461 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x32: UNKNOWN_0x32 /*0x852764*/
       v462 = Packet::GetLong(incoming, nullptr); /*0x85277c*/
       v463 = (Byte__Array *)sub_73C7E4(TypeInfo::System::Byte, (unsigned int)v462); /*0x852794*/
       if ( v462 < 1 ) /*0x852798*/
@@ -4768,7 +4768,7 @@ LABEL_463:
       UnityEngine::UI::Image::set_sprite(v968, (Sprite *)v167._dateData, nullptr); /*0x857f30*/
       return; /*0x857f34*/
     case 50:
-      v632 = Packet::GetString(incoming, nullptr); /*0x853e4c*/
+      v632 = Packet::GetString(incoming, nullptr);// // case 0x33: EDIT_TELEPORTER /*0x853e4c*/
       v633 = Packet::GetString(incoming, nullptr); /*0x853e5c*/
       v634 = Packet::GetString(incoming, nullptr); /*0x853e6c*/
       v635 = Packet::GetShort(incoming, nullptr); /*0x853e7c*/
@@ -4815,7 +4815,7 @@ LABEL_463:
         nullptr);
       return; /*0x853fc0*/
     case 52:
-      v199 = Packet::GetString(incoming, nullptr); /*0x84fff0*/
+      v199 = Packet::GetString(incoming, nullptr);// // case 0x35: MINIGAME_CHALLENGE /*0x84fff0*/
       v200 = Packet::GetByte(incoming, nullptr); /*0x84fffc*/
       if ( v200 > 1u ) /*0x850008*/
       {
@@ -4904,7 +4904,7 @@ LABEL_463:
       GameServerSender::SendMinigameResponse((GameServerSender *)v167._dateData, v206, v984, v983, v203); /*0x858288*/
       return; /*0x85828c*/
     case 53:
-      v167._dateData = sub_73C88C(TypeInfo::GameServerReceiver::__c__DisplayClass18_0); /*0x850c2c*/
+      v167._dateData = sub_73C88C(TypeInfo::GameServerReceiver::__c__DisplayClass18_0);// // case 0x36: MINIGAME_RESPONSE /*0x850c2c*/
       if ( !v167._dateData ) /*0x850c30*/
         goto LABEL_1546; /*0x850c30*/
       v270 = v167._dateData; /*0x850c60*/
@@ -5002,7 +5002,7 @@ LABEL_1488:
         nullptr);
       return; /*0x85810c*/
     case 54:
-      v499 = Packet::GetString(incoming, nullptr); /*0x852d48*/
+      v499 = Packet::GetString(incoming, nullptr);// // case 0x37: BEGIN_MINIGAME /*0x852d48*/
       v500 = Packet::GetByte(incoming, nullptr); /*0x852d5c*/
       v501 = Packet::GetByte(incoming, nullptr); /*0x852d68*/
       v502 = v501; /*0x852da8*/
@@ -5145,7 +5145,7 @@ LABEL_1488:
           return;
       }
     case 55:
-      v563 = TypeInfo::PoolGameControl; /*0x8534a4*/
+      v563 = TypeInfo::PoolGameControl; // // case 0x38: EXIT_MINIGAME /*0x8534a4*/
       if ( !TypeInfo::PoolGameControl->_1.cctor_finished_or_no_cctor ) /*0x8534a8*/
       {
         j_il2cpp_runtime_class_init_0(TypeInfo::PoolGameControl); /*0x8534b8*/
@@ -5176,7 +5176,7 @@ LABEL_1488:
       v566 = &StringLiteral_Other_player_left; /*0x853550*/
       goto LABEL_605; /*0x853550*/
     case 56:
-      v727 = TypeInfo::PoolGameControl; /*0x854f78*/
+      v727 = TypeInfo::PoolGameControl; // // case 0x39: POOL_CUE_POS /*0x854f78*/
       if ( !TypeInfo::PoolGameControl->_1.cctor_finished_or_no_cctor ) /*0x854f7c*/
       {
         j_il2cpp_runtime_class_init_0(TypeInfo::PoolGameControl); /*0x854f88*/
@@ -5201,7 +5201,7 @@ LABEL_1488:
       PoolGameControl::TryUpdateCuePosition((PoolGameControl *)v167._dateData, (float)v731 / 100.0, nullptr); /*0x855014*/
       return; /*0x855018*/
     case 57:
-      v509 = TypeInfo::PoolGameControl; /*0x852ea8*/
+      v509 = TypeInfo::PoolGameControl; // // case 0x3A: POOL_SHOOT /*0x852ea8*/
       if ( !TypeInfo::PoolGameControl->_1.cctor_finished_or_no_cctor ) /*0x852eac*/
       {
         j_il2cpp_runtime_class_init_0(TypeInfo::PoolGameControl); /*0x852eb8*/
@@ -5262,7 +5262,7 @@ LABEL_539:
       }
       return; /*0x853024*/
     case 58:
-      v235 = TypeInfo::PoolGameControl; /*0x8505c4*/
+      v235 = TypeInfo::PoolGameControl; // // case 0x3B: POOL_SYNC_READY /*0x8505c4*/
       if ( !TypeInfo::PoolGameControl->_1.cctor_finished_or_no_cctor ) /*0x8505c8*/
       {
         j_il2cpp_runtime_class_init_0(TypeInfo::PoolGameControl); /*0x8505d4*/
@@ -5285,7 +5285,7 @@ LABEL_539:
       PoolGameControl::OnOtherPlayerReady((PoolGameControl *)v167._dateData, nullptr); /*0x85063c*/
       return; /*0x850640*/
     case 59:
-      v207 = TypeInfo::PoolGameControl; /*0x8500ac*/
+      v207 = TypeInfo::PoolGameControl; // // case 0x3C: POOL_PLACE_BALL /*0x8500ac*/
       if ( !TypeInfo::PoolGameControl->_1.cctor_finished_or_no_cctor ) /*0x8500b0*/
       {
         j_il2cpp_runtime_class_init_0(TypeInfo::PoolGameControl); /*0x8500bc*/
@@ -5313,7 +5313,7 @@ LABEL_539:
       PoolGameControl::PlaceWhiteBallAt((PoolGameControl *)v167._dateData, v1034, nullptr); /*0x850154*/
       return; /*0x850158*/
     case 60:
-      v756 = (Int32__Array *)sub_73C7E4(TypeInfo::System::Int32, 14); /*0x855448*/
+      v756 = (Int32__Array *)sub_73C7E4(TypeInfo::System::Int32, 14);// // case 0x3D: POOL_PLAY_AGAIN /*0x855448*/
       for ( kk = 0; kk != 14; ++kk ) /*0x85544c*/
       {
         v167._dateData = Packet::GetByte(incoming, nullptr); /*0x85545c*/
@@ -5351,7 +5351,7 @@ LABEL_539:
       }
       return; /*0x855510*/
     case 61:
-      v718 = Packet::GetString(incoming, nullptr); /*0x854d50*/
+      v718 = Packet::GetString(incoming, nullptr);// // case 0x3E: FINISH_SIT /*0x854d50*/
       v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x854d5c*/
       if ( !TypeInfo::GameServerInterface->static_fields->Instance ) /*0x854d74*/
         goto LABEL_1546; /*0x854d74*/
@@ -5379,7 +5379,7 @@ LABEL_539:
         SharedCreature::EndSittingInChair((SharedCreature *)v167._dateData, nullptr); /*0x856ff0*/
       return; /*0x854df4*/
     case 62:
-      v229 = Packet::GetByte(incoming, nullptr); /*0x8503f0*/
+      v229 = Packet::GetByte(incoming, nullptr);// // case 0x3F: CLAIM_MOBS /*0x8503f0*/
       if ( !v229 ) /*0x8503f4*/
         return; /*0x8503f4*/
       do /*0x8505b4*/
@@ -5473,7 +5473,7 @@ LABEL_539:
       while ( v229 ); /*0x8505b4*/
       return; /*0x8505b4*/
     case 63:
-      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x85391c*/
+      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr);// // case 0x40: DELOAD_MOB /*0x85391c*/
       v590 = TypeInfo::MobControl->static_fields->Instance; /*0x853930*/
       if ( !v590 ) /*0x853934*/
         goto LABEL_1546; /*0x853934*/
@@ -5569,7 +5569,7 @@ LABEL_1276:
       UnityEngine::Object::Destroy(v737, nullptr); /*0x856fe0*/
       return; /*0x856fe8*/
     case 64:
-      v167._dateData = sub_73C88C(TypeInfo::System::Collections::Generic::List<System::String>); /*0x853d7c*/
+      v167._dateData = sub_73C88C(TypeInfo::System::Collections::Generic::List<System::String>);// // case 0x41: MOB_POSITIONS /*0x853d7c*/
       if ( !v167._dateData ) /*0x853d80*/
         goto LABEL_1546; /*0x853d80*/
       v626 = (List_1_System_Object_ *)v167._dateData; /*0x853d88*/
@@ -5791,7 +5791,7 @@ LABEL_1395:
       v228 = v837; /*0x857934*/
       goto LABEL_1396; /*0x857934*/
     case 65:
-      v213 = Packet::GetString(incoming, nullptr); /*0x850178*/
+      v213 = Packet::GetString(incoming, nullptr);// // case 0x42: UNKNOWN_0x42 /*0x850178*/
       v167._dateData = sub_73C88C(TypeInfo::Packet); /*0x850184*/
       if ( !v167._dateData ) /*0x850188*/
         goto LABEL_1546; /*0x850188*/
@@ -5907,7 +5907,7 @@ LABEL_111:
       v228 = v214; /*0x8503dc*/
       goto LABEL_1396; /*0x8503e0*/
     case 66:
-      v682 = (Object *)Packet::GetString(incoming, nullptr); /*0x8547a8*/
+      v682 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x43: UNKNOWN_0x43 /*0x8547a8*/
       v683 = Packet::GetByte(incoming, nullptr); /*0x8547b8*/
       if ( !v683 ) /*0x8547bc*/
         return; /*0x8547bc*/
@@ -5960,7 +5960,7 @@ LABEL_111:
       while ( v683 ); /*0x8548f8*/
       return; /*0x8548f8*/
     case 68:
-      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x854060*/
+      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr);// // case 0x45: UNKNOWN_0x45 /*0x854060*/
       v645 = TypeInfo::MobControl->static_fields->Instance; /*0x854074*/
       if ( !v645 ) /*0x854078*/
         goto LABEL_1546; /*0x854078*/
@@ -6042,7 +6042,7 @@ LABEL_111:
       UnityEngine::Transform::set_rotation((Transform *)v167._dateData, rotation, nullptr); /*0x854268*/
       return; /*0x85426c*/
     case 69:
-      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x8557e0*/
+      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr);// // case 0x46: ATTACK_ANIM /*0x8557e0*/
       v779 = TypeInfo::MobControl->static_fields->Instance; /*0x8557f4*/
       if ( !v779 ) /*0x8557f8*/
         goto LABEL_1546; /*0x8557f8*/
@@ -6076,7 +6076,7 @@ LABEL_111:
       SharedCreature::VisuallyAttack((SharedCreature *)v167._dateData, nullptr); /*0x855870*/
       return; /*0x855874*/
     case 70:
-      v738 = Packet::GetString(incoming, nullptr); /*0x855164*/
+      v738 = Packet::GetString(incoming, nullptr);// // case 0x47: HIT_MOB /*0x855164*/
       Packet::GetLong(incoming, nullptr); /*0x855170*/
       Packet::GetLong(incoming, nullptr); /*0x855180*/
       Packet::GetByte(incoming, nullptr); /*0x855190*/
@@ -6132,7 +6132,7 @@ LABEL_1560:
       }
       goto LABEL_1546; /*0x8552a8*/
     case 71:
-      v761 = (Object *)Packet::GetString(incoming, nullptr); /*0x855530*/
+      v761 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x48: MOB_DIE /*0x855530*/
       zonee = Packet::GetShort(incoming, nullptr); /*0x855540*/
       v994 = Packet::GetShort(incoming, nullptr); /*0x855550*/
       v762 = Packet::GetString(incoming, nullptr); /*0x855560*/
@@ -6283,7 +6283,7 @@ LABEL_1468:
       Combatant::Die((Combatant *)v167._dateData, v774, (float)zonee / 10.0, (float)v994 / 10.0, stra, nullptr); /*0x857e8c*/
       return; /*0x857e90*/
     case 73:
-      v653 = (Object *)Packet::GetString(incoming, nullptr); /*0x854290*/
+      v653 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x4A: CREATURE_STATS /*0x854290*/
       v654 = Packet::GetLong(incoming, nullptr); /*0x8542a0*/
       v655 = Packet::GetLong(incoming, nullptr); /*0x8542b0*/
       v656 = Packet::GetLong(incoming, nullptr); /*0x8542c0*/
@@ -6416,7 +6416,7 @@ LABEL_1468:
       }
       return; /*0x8544cc*/
     case 74:
-      v666 = Packet::GetString(incoming, nullptr); /*0x8544e4*/
+      v666 = Packet::GetString(incoming, nullptr);// // case 0x4B: INCREASE_HP /*0x8544e4*/
       v167._dateData = Packet::GetLong(incoming, nullptr); /*0x8544f0*/
       if ( !TypeInfo::PlayerData->static_fields->Instance ) /*0x854504*/
         goto LABEL_1546; /*0x854504*/
@@ -6460,7 +6460,7 @@ LABEL_1468:
       Combatant::IncreaseHp((Combatant *)v167._dateData, v667, nullptr); /*0x8545d0*/
       return; /*0x8545d4*/
     case 75:
-      v306 = Packet::GetString(incoming, nullptr); /*0x8511e0*/
+      v306 = Packet::GetString(incoming, nullptr);// // case 0x4C: SHOW_EXP /*0x8511e0*/
       v1018 = GameServerReceiver::UnpackPosition((GameServerReceiver *)v306, incoming, v307); /*0x8511e4*/
       v308 = TypeInfo::GameController; /*0x8511fc*/
       if ( !TypeInfo::GameController->_1.cctor_finished_or_no_cctor ) /*0x851200*/
@@ -6474,7 +6474,7 @@ LABEL_1468:
       GameController::showOverheadNotif((GameController *)v167._dateData, v306, v1018, 0, 0, nullptr); /*0x85123c*/
       return; /*0x851240*/
     case 77:
-      v710 = (Object *)Packet::GetString(incoming, nullptr); /*0x854bd0*/
+      v710 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x4E: COMPANION_EQUIP /*0x854bd0*/
       v711 = InventoryItem::UnpackFromWeb(incoming, nullptr); /*0x854be0*/
       v712 = InventoryItem::UnpackFromWeb(incoming, nullptr); /*0x854bf0*/
       v167._dateData = (uint64_t)InventoryItem::UnpackFromWeb(incoming, nullptr); /*0x854bfc*/
@@ -6536,7 +6536,7 @@ LABEL_1468:
       }
       return; /*0x854d34*/
     case 78:
-      v174 = (Object *)Packet::GetString(incoming, nullptr); /*0x84fbf8*/
+      v174 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x4F: RENAME_COMPANION /*0x84fbf8*/
       v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x84fc04*/
       v175 = TypeInfo::MobControl->static_fields->Instance; /*0x84fc18*/
       if ( !v175 ) /*0x84fc1c*/
@@ -6648,7 +6648,7 @@ LABEL_50:
       SharedCreature::RedrawLevelDisplay((SharedCreature *)v179, nullptr); /*0x84fe1c*/
       return; /*0x84fe28*/
     case 79:
-      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x85502c*/
+      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr);// // case 0x50: DESTROY_COMPANION /*0x85502c*/
       v732 = TypeInfo::MobControl->static_fields->Instance; /*0x855040*/
       if ( !v732 ) /*0x855044*/
         goto LABEL_1546; /*0x855044*/
@@ -6702,7 +6702,7 @@ LABEL_50:
       v737 = (Object_1 *)v736; /*0x855148*/
       goto LABEL_1276; /*0x85514c*/
     case 80:
-      v745 = Packet::GetString(incoming, nullptr); /*0x8552e4*/
+      v745 = Packet::GetString(incoming, nullptr);// // case 0x51: APPLY_PERK /*0x8552e4*/
       v746 = Packet::GetLong(incoming, nullptr); /*0x8552f4*/
       v747 = Packet::GetString(incoming, nullptr); /*0x855308*/
       v167._dateData = sub_73C88C(TypeInfo::PerkData); /*0x855310*/
@@ -6776,7 +6776,7 @@ LABEL_50:
       }
       return; /*0x856510*/
     case 81:
-      if ( !TypeInfo::UnityEngine::Debug->_1.cctor_finished_or_no_cctor ) /*0x8524c0*/
+      if ( !TypeInfo::UnityEngine::Debug->_1.cctor_finished_or_no_cctor )// // case 0x52: LAUNCH_PERK /*0x8524c0*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::Debug); /*0x8524cc*/
       UnityEngine::Debug::Log((Object *)"Received: launch projectile", nullptr);
       v167._dateData = sub_73C88C(TypeInfo::PerkData); /*0x8524e0*/
@@ -6815,7 +6815,7 @@ LABEL_50:
         nullptr);
       return; /*0x8525fc*/
     case 82:
-      v775 = (Object *)Packet::GetString(incoming, nullptr); /*0x85572c*/
+      v775 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x53: QUICK_TAG /*0x85572c*/
       v167._dateData = Packet::GetByte(incoming, nullptr); /*0x855738*/
       v776 = TypeInfo::MobControl->static_fields->Instance; /*0x85574c*/
       if ( !v776 ) /*0x855750*/
@@ -6850,7 +6850,7 @@ LABEL_50:
       *(_BYTE *)(v167._dateData + 82) = v777 == 1; /*0x8557d0*/
       return; /*0x8557d4*/
     case 83:
-      v671 = (Object *)Packet::GetString(incoming, nullptr); /*0x8545f0*/
+      v671 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x54: ALL_PERKS /*0x8545f0*/
       v672 = Packet::GetShort(incoming, nullptr); /*0x854600*/
       if ( v672 < 1 ) /*0x854608*/
         return; /*0x854608*/
@@ -6923,7 +6923,7 @@ LABEL_50:
       v1017 = GameServerReceiver::UnpackPosition( /*0x84fe44*/
                 (GameServerReceiver *)&MethodInfo::UnityEngine::GameObject::GetComponent<Combatant>,
                 incoming,
-                (MethodInfo *)&TypeInfo::Startup);
+                (MethodInfo *)&TypeInfo::Startup);// // case 0x55: CREATE_PERK_DROP
       v190 = Packet::GetString(incoming, nullptr); /*0x84fe64*/
       v167._dateData = sub_73C88C(TypeInfo::PerkData); /*0x84fe6c*/
       if ( !v167._dateData ) /*0x84fe70*/
@@ -6943,7 +6943,7 @@ LABEL_50:
       PerkControl::CreateDrop((PerkControl *)v167._dateData, v1017, v190, v191, v192, v193, v194, 0, nullptr); /*0x84ff20*/
       return; /*0x84ff24*/
     case 85:
-      v276 = (Object *)Packet::GetString(incoming, nullptr); /*0x850d1c*/
+      v276 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x56: RESPAWN /*0x850d1c*/
       v167._dateData = sub_73C88C(TypeInfo::OnlinePlayerData); /*0x850d24*/
       if ( !v167._dateData ) /*0x850d28*/
         goto LABEL_1546; /*0x850d28*/
@@ -6990,7 +6990,7 @@ LABEL_50:
       MobControl::SpawnOtherPlayer(v281, (OnlinePlayer *)v167._dateData, v277, nullptr); /*0x850e0c*/
       return; /*0x850e10*/
     case 87:
-      v598 = (Object *)Packet::GetString(incoming, nullptr); /*0x853a38*/
+      v598 = (Object *)Packet::GetString(incoming, nullptr);// // case 0x58: MOB_TARGET_SYNC /*0x853a38*/
       LOBYTE(v599) = Packet::GetByte(incoming, nullptr); /*0x853a50*/
       v167._dateData = sub_73C88C(TypeInfo::System::Collections::Generic::List<System::String>); /*0x853a5c*/
       if ( !v167._dateData ) /*0x853a60*/
@@ -7062,7 +7062,7 @@ LABEL_667:
       v419 = v167._dateData + 176; /*0x853b6c*/
       goto LABEL_871; /*0x853b74*/
     case 89:
-      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr); /*0x84ff38*/
+      v167._dateData = (uint64_t)Packet::GetString(incoming, nullptr);// // case 0x5A: BANDIT_FLAG_DEST /*0x84ff38*/
       v195 = TypeInfo::BanditCampsControl->static_fields->Instance; /*0x84ff4c*/
       if ( !v195 ) /*0x84ff50*/
         goto LABEL_1546; /*0x84ff50*/

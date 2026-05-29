@@ -1,8 +1,8 @@
 // Void OnReceive(Packet)
 void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incoming, MethodInfo *method)
 {
-  Packet *v3; // x21
-  FriendServerReceiver *v4; // x20
+  Packet *pkt; // x21
+  FriendServerReceiver *receiver; // x20
   __int64 v5; // x1
   __int64 v6; // x1
   __int64 v7; // x1
@@ -122,7 +122,7 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
   __int64 v121; // x1
   __int64 v122; // x1
   __int64 v123; // x1
-  uint8_t Byte; // w0
+  uint8_t opcode; // w0
   String *name; // x0
   MethodInfo *v126; // x3
   WindowControl *Instance; // x8
@@ -265,7 +265,7 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
   int v264; // w9
   String *v265; // x0
   String *v266; // x0
-  int v267; // w8
+  int Byte; // w8
   struct FriendServerSender__Class *v268; // x8
   String *v269; // x0
   WindowControl *v270; // x8
@@ -469,8 +469,8 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
   DateTime v468; // 0:x0.8
   Vector2 v469; // 0:s4.4,4:s5.4
 
-  v3 = incoming; /*0x83521c*/
-  v4 = this; /*0x835220*/
+  pkt = incoming; /*0x83521c*/
+  receiver = this; /*0x835220*/
   if ( (byte_27E6BC5 & 1) == 0 ) /*0x835224*/
   {
     sub_73C778(&TypeInfo::System::Action<System::Collections::Generic::Dictionary<System::String,short>>, incoming); /*0x835230*/
@@ -595,7 +595,7 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
     this = (FriendServerReceiver *)sub_73C778(&TypeInfo::chat_log, v123); /*0x8357c4*/
     byte_27E6BC5 = 1; /*0x8357cc*/
   }
-  v457 = v4; /*0x8357d0*/
+  v457 = receiver; /*0x8357d0*/
   v466.m_Handle = 0; /*0x8357d4*/
   v465.m_value = 0; /*0x8357d8*/
   v464.m_value = 0; /*0x8357dc*/
@@ -603,16 +603,16 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
   memset(&v463, 0, sizeof(v463)); /*0x8357e4*/
   v461.m_value = 0; /*0x8357e8*/
   last_online._dateData = 0; /*0x8357ec*/
-  if ( !v3 ) /*0x8357f0*/
+  if ( !pkt ) /*0x8357f0*/
     goto LABEL_639; /*0x8357f0*/
-  incominga = v3; /*0x8357fc*/
-  Byte = Packet::GetByte(v3, nullptr); /*0x835800*/
+  incominga = pkt; /*0x8357fc*/
+  opcode = Packet::GetByte(pkt, nullptr); /*0x835800*/
   method = (MethodInfo *)&TypeInfo::ToPing; /*0x835898*/
   incoming = (Packet *)&TypeInfo::System::Action<System::Collections::Generic::Dictionary<System::String,short>>; /*0x8358a0*/
-  switch ( Byte ) /*0x835908*/
+  switch ( opcode ) /*0x835908*/
   {
     case 6u: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x835920*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x06: UPDATE_AVAILABLE - shows update notification on connecting screen /*0x835920*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x835928*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x835934*/
       name = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x835940*/
@@ -640,12 +640,12 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
       v130 = 1; /*0x8359d8*/
       goto LABEL_249; /*0x8359dc*/
     case 7u: /*0x835908*/
-      this = (FriendServerReceiver *)sub_73C88C(TypeInfo::MathProblem); /*0x83698c*/
+      this = (FriendServerReceiver *)sub_73C88C(TypeInfo::MathProblem);// // case 0x07: MATH_CHALLENGE - unpack and solve MathProblem, send solution /*0x83698c*/
       if ( !this ) /*0x836990*/
         goto LABEL_639; /*0x836990*/
       v244 = this; /*0x836998*/
       MathProblem::MathProblem((MathProblem *)this, nullptr); /*0x83699c*/
-      MathProblem::Unpack((MathProblem *)v244, v3, nullptr); /*0x8369ac*/
+      MathProblem::Unpack((MathProblem *)v244, pkt, nullptr); /*0x8369ac*/
       v245 = MathProblem::Solve((MathProblem *)v244, nullptr); /*0x8369c0*/
       if ( !byte_27E6BD5 ) /*0x8369c4*/
       {
@@ -658,7 +658,7 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
       FriendServerSender::SendMathSolution((FriendServerSender *)this, v245, nullptr); /*0x8369f4*/
       return; /*0x8369f8*/
     case 8u: /*0x835908*/
-      this = (FriendServerReceiver *)TypeInfo::PlayerData->static_fields->Instance; /*0x836588*/
+      this = (FriendServerReceiver *)TypeInfo::PlayerData->static_fields->Instance;// // case 0x08: SIGNAL_INTENT_REQ - server requesting login intent (has username?) /*0x836588*/
       if ( !this ) /*0x83658c*/
         goto LABEL_639; /*0x83658c*/
       GlobalString = PlayerData::GetGlobalString((PlayerData *)this, (String *)"username_lower", nullptr); /*0x8365a0*/
@@ -678,8 +678,8 @@ void FriendServerReceiver::OnReceive(FriendServerReceiver *this, Packet *incomin
       FriendServerSender::SignalIntent((FriendServerSender *)this, v213, nullptr); /*0x837cd8*/
       return; /*0x837cdc*/
     case 9u: /*0x835908*/
-      v267 = Packet::GetByte(v3, nullptr); /*0x836d74*/
-      if ( v267 == 2 ) /*0x836d7c*/
+      Byte = Packet::GetByte(pkt, nullptr); // // case 0x09: LOGIN_RESPONSE - result of login attempt (1=ok, 2=need register) /*0x836d74*/
+      if ( Byte == 2 ) /*0x836d7c*/
       {
         if ( !byte_27E6BD3 ) /*0x838ea4*/
         {
@@ -699,7 +699,7 @@ LABEL_586:
           goto LABEL_639; /*0x838ed8*/
         FriendServerConnector::TryGotoRegisterScreen((FriendServerConnector *)this, (MethodInfo *)incoming); /*0x838edc*/
       }
-      else if ( v267 == 1 ) /*0x836d84*/
+      else if ( Byte == 1 ) /*0x836d84*/
       {
         if ( !byte_27E6BD5 ) /*0x836d90*/
         {
@@ -718,7 +718,7 @@ LABEL_216:
       }
       return; /*0x836d84*/
     case 0xAu: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x836de0*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x0A: REGISTER_RESULT - result of username registration (1=success, 2=taken, 3=bad, 4=invalid chars) /*0x836de0*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x836df8*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x836e04*/
       v269 = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x836e10*/
@@ -741,10 +741,10 @@ LABEL_216:
           if ( v271->curr_screen == 3 ) /*0x836e9c*/
           {
             v272 = &StringLiteral__color__bbbbbb_Username_unavaila; /*0x836ed4*/
-            switch ( Packet::GetByte(v3, nullptr) ) /*0x836ed8*/
+            switch ( Packet::GetByte(pkt, nullptr) ) /*0x836ed8*/
             {
               case 1u: /*0x836ed8*/
-                String = Packet::GetString(v3, nullptr); /*0x836efc*/
+                String = Packet::GetString(pkt, nullptr); /*0x836efc*/
                 v274 = Packet::GetString(incominga, nullptr); /*0x836f0c*/
                 v275 = Packet::GetString(incominga, nullptr); /*0x836f34*/
                 v276 = TypeInfo::PopupControl->static_fields->Instance; /*0x836f38*/
@@ -798,7 +798,7 @@ LABEL_216:
               case 4u: /*0x836ed8*/
                 v453 = (String **)&StringLiteral___contains_letters_that_are_not_; /*0x8391ac*/
 LABEL_629:
-                v454 = Packet::GetString(v3, nullptr); /*0x8391bc*/
+                v454 = Packet::GetString(pkt, nullptr); /*0x8391bc*/
                 v455 = (String *)*v272; /*0x8391dc*/
                 v456 = TypeInfo::PopupControl->static_fields->Instance; /*0x8391e0*/
                 this = (FriendServerReceiver *)System::String::Concat(v455, v454, *v453, nullptr); /*0x8391e8*/
@@ -856,8 +856,8 @@ LABEL_459:
       *(_DWORD *)(v370 + 80) = 4; /*0x838320*/
       return; /*0x838324*/
     case 0xBu: /*0x835908*/
-      v224 = v3; /*0x83675c*/
-      v225 = Packet::GetByte(v3, nullptr); /*0x836774*/
+      v224 = pkt; // // case 0x0B: LOGIN_SUCCESS - full friend list sync, trophies, pings, gem count /*0x83675c*/
+      v225 = Packet::GetByte(pkt, nullptr); /*0x836774*/
       if ( v225 == 1 ) /*0x83677c*/
       {
         if ( !byte_27E6BD3 ) /*0x8384fc*/
@@ -866,7 +866,7 @@ LABEL_459:
           byte_27E6BD3 = 1; /*0x83851c*/
         }
         this = (FriendServerReceiver *)TypeInfo::FriendServerConnector; /*0x838520*/
-        v226 = v4; /*0x838524*/
+        v226 = receiver; /*0x838524*/
         if ( !TypeInfo::FriendServerConnector->_1.cctor_finished_or_no_cctor ) /*0x838528*/
         {
           j_il2cpp_runtime_class_init_0(TypeInfo::FriendServerConnector); /*0x838530*/
@@ -902,8 +902,8 @@ LABEL_459:
           byte_27E6BD3 = 1; /*0x8367b8*/
         }
         this = (FriendServerReceiver *)TypeInfo::FriendServerConnector; /*0x8367bc*/
-        v226 = v4; /*0x8367c0*/
-        v224 = v3; /*0x8367c0*/
+        v226 = receiver; /*0x8367c0*/
+        v224 = pkt; /*0x8367c0*/
         if ( !TypeInfo::FriendServerConnector->_1.cctor_finished_or_no_cctor ) /*0x8367c8*/
         {
           j_il2cpp_runtime_class_init_0(TypeInfo::FriendServerConnector); /*0x8367d0*/
@@ -1261,7 +1261,7 @@ LABEL_459:
       }
       return; /*0x838e9c*/
     case 0xCu: /*0x835908*/
-      if ( !byte_27E6BD3 ) /*0x836a00*/
+      if ( !byte_27E6BD3 ) // // case 0x0C: REDIRECT_TO_REGISTER - server tells client to go to register screen /*0x836a00*/
       {
         sub_73C778( /*0x836a14*/
           &TypeInfo::FriendServerConnector,
@@ -1273,7 +1273,7 @@ LABEL_459:
         goto LABEL_585; /*0x836a2c*/
       goto LABEL_586; /*0x836a2c*/
     case 0xFu: /*0x835908*/
-      if ( !byte_27E6BD3 ) /*0x836a3c*/
+      if ( !byte_27E6BD3 ) // // case 0x0F: PING - server ping response, updates last_server_ping timestamp /*0x836a3c*/
       {
         sub_73C778( /*0x836a54*/
           &TypeInfo::FriendServerConnector,
@@ -1306,8 +1306,8 @@ LABEL_459:
       if ( !this ) /*0x837240*/
         goto LABEL_639; /*0x837240*/
       FriendServerSender::EndTimeout((FriendServerSender *)this, nullptr); /*0x837254*/
-      v287 = Packet::GetByte(v3, nullptr); /*0x837264*/
-      v288 = Packet::GetString(v3, nullptr); /*0x837274*/
+      v287 = Packet::GetByte(pkt, nullptr); /*0x837264*/
+      v288 = Packet::GetString(pkt, nullptr); /*0x837274*/
       if ( v287 ) /*0x837278*/
       {
         v289 = (String **)&StringLiteral__color__bbbbbb_Cannot_Add__color; /*0x8372a0*/
@@ -1387,7 +1387,7 @@ LABEL_634:
         if ( !v372 ) /*0x83836c*/
           goto LABEL_639; /*0x83836c*/
         PopupControl::ShowMessage(v372, (String *)this, PopupControl_context__Enum_message, nullptr); /*0x838380*/
-        v373 = v4->friends; /*0x838388*/
+        v373 = receiver->friends; /*0x838388*/
         this = (FriendServerReceiver *)sub_73C88C(TypeInfo::Friend); /*0x83838c*/
         if ( !this ) /*0x838390*/
           goto LABEL_639; /*0x838390*/
@@ -1459,9 +1459,9 @@ LABEL_382:
           }
         }
       }
-      return;
+      return; // // case 0x10: ADD_FRIEND_RESULT - result of add-friend attempt (0=sent, 1-7=various errors)
     case 0x11u: /*0x835908*/
-      v280 = Packet::GetString(v3, nullptr); /*0x83714c*/
+      v280 = Packet::GetString(pkt, nullptr); // // case 0x11: FRIEND_REQUEST_RECEIVED - someone sent you a friend request /*0x83714c*/
       v281 = Packet::GetString(incominga, nullptr); /*0x837160*/
       this = (FriendServerReceiver *)sub_73C88C(TypeInfo::Friend); /*0x837168*/
       if ( !this ) /*0x83716c*/
@@ -1510,7 +1510,7 @@ LABEL_382:
       icon_got_friend_req = v351->icon_got_friend_req; /*0x837de0*/
       goto LABEL_399; /*0x837de0*/
     case 0x12u: /*0x835908*/
-      if ( !byte_27E6BD5 ) /*0x836108*/
+      if ( !byte_27E6BD5 ) // // case 0x12: FRIEND_STATUS_UPDATE - friend online/offline status changed /*0x836108*/
       {
         sub_73C778( /*0x836128*/
           &TypeInfo::FriendServerSender,
@@ -1521,23 +1521,23 @@ LABEL_382:
       if ( !this ) /*0x836154*/
         goto LABEL_639; /*0x836154*/
       FriendServerSender::EndTimeout((FriendServerSender *)this, nullptr); /*0x836168*/
-      v184 = Packet::GetString(v3, nullptr); /*0x836178*/
-      v185 = Packet::GetByte(v3, nullptr); /*0x836188*/
-      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(v4, v184, v186); /*0x836194*/
+      v184 = Packet::GetString(pkt, nullptr); /*0x836178*/
+      v185 = Packet::GetByte(pkt, nullptr); /*0x836188*/
+      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(receiver, v184, v186); /*0x836194*/
       if ( !this ) /*0x836198*/
         goto LABEL_639; /*0x836198*/
       v188 = (Friend *)this; /*0x8361a0*/
       if ( v185 == 1 ) /*0x8361ac*/
       {
         LODWORD(this->trophies) = 1; /*0x8361b8*/
-        FriendServerReceiver::UnpackWorldString(this, (Friend *)this, v3, v187); /*0x8361bc*/
+        FriendServerReceiver::UnpackWorldString(this, (Friend *)this, pkt, v187); /*0x8361bc*/
       }
       else
       {
         LODWORD(this->trophies) = 0; /*0x837b4c*/
-        if ( Packet::GetByte(v3, nullptr) == 1 ) /*0x837b5c*/
+        if ( Packet::GetByte(pkt, nullptr) == 1 ) /*0x837b5c*/
         {
-          v344 = Packet::GetString(v3, nullptr); /*0x837b70*/
+          v344 = Packet::GetString(pkt, nullptr); /*0x837b70*/
           if ( !TypeInfo::System::Globalization::CultureInfo->_1.cctor_finished_or_no_cctor ) /*0x837b74*/
             j_il2cpp_runtime_class_init_0(TypeInfo::System::Globalization::CultureInfo); /*0x837b80*/
           v345 = (IFormatProvider *)System::Globalization::CultureInfo::get_InvariantCulture(nullptr); /*0x837b90*/
@@ -1573,10 +1573,10 @@ LABEL_382:
       v301 = TypeInfo::UnityEngine::SceneManagement::SceneManager; /*0x837c18*/
       goto LABEL_373; /*0x837c18*/
     case 0x13u: /*0x835908*/
-      v228 = Packet::GetString(v3, nullptr); /*0x836814*/
+      v228 = Packet::GetString(pkt, nullptr); // // case 0x13: FRIEND_REQUEST_ACCEPTED - your friend request was accepted /*0x836814*/
       v229 = Packet::GetString(incominga, nullptr); /*0x836824*/
       v230 = Packet::GetByte(incominga, nullptr); /*0x836834*/
-      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(v4, v228, v231); /*0x836840*/
+      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(receiver, v228, v231); /*0x836840*/
       if ( !this ) /*0x836844*/
         goto LABEL_639; /*0x836844*/
       v232 = v230; /*0x836848*/
@@ -1638,7 +1638,7 @@ LABEL_407:
       }
       return; /*0x837e60*/
     case 0x14u: /*0x835908*/
-      if ( !byte_27E6BD5 ) /*0x836434*/
+      if ( !byte_27E6BD5 ) // // case 0x14: FRIEND_REMOVED - a friend was removed from your list /*0x836434*/
       {
         sub_73C778( /*0x836448*/
           &TypeInfo::FriendServerSender,
@@ -1649,18 +1649,18 @@ LABEL_407:
       if ( !this ) /*0x836468*/
         goto LABEL_639; /*0x836468*/
       FriendServerSender::EndTimeout((FriendServerSender *)this, nullptr); /*0x836470*/
-      v204 = Packet::GetString(v3, nullptr); /*0x83647c*/
-      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(v4, v204, v205); /*0x836488*/
-      if ( !v4->friends ) /*0x83648c*/
+      v204 = Packet::GetString(pkt, nullptr); /*0x83647c*/
+      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(receiver, v204, v205); /*0x836488*/
+      if ( !receiver->friends ) /*0x83648c*/
         goto LABEL_639; /*0x83648c*/
       this = (FriendServerReceiver *)System::Collections::Generic::List<System::Object>::IndexOf( /*0x8364a0*/
-                                       (List_1_System_Object_ *)v4->friends,
+                                       (List_1_System_Object_ *)receiver->friends,
                                        (Object *)this,
                                        MethodInfo::System::Collections::Generic::List<Friend>::IndexOf);
-      if ( !v4->friends ) /*0x8364a4*/
+      if ( !receiver->friends ) /*0x8364a4*/
         goto LABEL_639; /*0x8364a8*/
       System::Collections::Generic::List<System::Object>::RemoveAt( /*0x8364b8*/
-        (List_1_System_Object_ *)v4->friends,
+        (List_1_System_Object_ *)receiver->friends,
         (int32_t)this,
         MethodInfo::System::Collections::Generic::List<Friend>::RemoveAt);
       if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x8364c0*/
@@ -1673,18 +1673,18 @@ LABEL_407:
       v207 = TypeInfo::WindowControl; /*0x8364fc*/
       goto LABEL_377; /*0x836500*/
     case 0x15u: /*0x835908*/
-      v155 = Packet::GetString(v3, nullptr); /*0x835cc0*/
-      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(v4, v155, v156); /*0x835cd0*/
-      if ( !v4->friends ) /*0x835cd4*/
+      v155 = Packet::GetString(pkt, nullptr); // // case 0x15: UNFRIEND_CONFIRM - confirmation that you unfriended someone /*0x835cc0*/
+      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(receiver, v155, v156); /*0x835cd0*/
+      if ( !receiver->friends ) /*0x835cd4*/
         goto LABEL_639; /*0x835cd4*/
       this = (FriendServerReceiver *)System::Collections::Generic::List<System::Object>::IndexOf( /*0x835ce8*/
-                                       (List_1_System_Object_ *)v4->friends,
+                                       (List_1_System_Object_ *)receiver->friends,
                                        (Object *)this,
                                        MethodInfo::System::Collections::Generic::List<Friend>::IndexOf);
-      if ( !v4->friends ) /*0x835cec*/
+      if ( !receiver->friends ) /*0x835cec*/
         goto LABEL_639; /*0x835cec*/
       System::Collections::Generic::List<System::Object>::RemoveAt( /*0x835d00*/
-        (List_1_System_Object_ *)v4->friends,
+        (List_1_System_Object_ *)receiver->friends,
         (int32_t)this,
         MethodInfo::System::Collections::Generic::List<Friend>::RemoveAt);
       if ( !byte_27E6BD3 ) /*0x835d08*/
@@ -1716,13 +1716,13 @@ LABEL_407:
       v159 = TypeInfo::FriendServerInterface; /*0x835dac*/
       goto LABEL_405; /*0x835db0*/
     case 0x16u: /*0x835908*/
-      v249 = Packet::GetString(v3, nullptr); /*0x836ac8*/
-      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(v4, v249, v250); /*0x836ad4*/
+      v249 = Packet::GetString(pkt, nullptr); // // case 0x16: FRIEND_ONLINE - friend came online, shows notification /*0x836ac8*/
+      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(receiver, v249, v250); /*0x836ad4*/
       if ( !this ) /*0x836ad8*/
         goto LABEL_639; /*0x836ad8*/
       v252 = this; /*0x836ae8*/
       LODWORD(this->trophies) = 1; /*0x836aec*/
-      FriendServerReceiver::UnpackWorldString(this, (Friend *)this, v3, v251); /*0x836af0*/
+      FriendServerReceiver::UnpackWorldString(this, (Friend *)this, pkt, v251); /*0x836af0*/
       if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x836af8*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x836b00*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x836b0c*/
@@ -1744,8 +1744,8 @@ LABEL_407:
       v257 = TypeInfo::OnNotifClick; /*0x836b84*/
       goto LABEL_400; /*0x836b88*/
     case 0x17u: /*0x835908*/
-      v258 = Packet::GetString(v3, nullptr); /*0x836b9c*/
-      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(v4, v258, v259); /*0x836bac*/
+      v258 = Packet::GetString(pkt, nullptr); // // case 0x17: FRIEND_OFFLINE - friend went offline, clears chat unread /*0x836b9c*/
+      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(receiver, v258, v259); /*0x836bac*/
       if ( !this ) /*0x836bb0*/
         goto LABEL_639; /*0x836bb0*/
       LODWORD(this->trophies) = 0; /*0x836bb4*/
@@ -1797,7 +1797,7 @@ LABEL_407:
         return; /*0x836cf0*/
       goto LABEL_382; /*0x836cf0*/
     case 0x18u: /*0x835908*/
-      if ( !byte_27E6BD5 ) /*0x837448*/
+      if ( !byte_27E6BD5 ) // // case 0x18: FRIEND_REQUEST_REJECTED - your friend request was declined /*0x837448*/
       {
         sub_73C778( /*0x837460*/
           &TypeInfo::FriendServerSender,
@@ -1808,18 +1808,18 @@ LABEL_407:
       if ( !this ) /*0x837484*/
         goto LABEL_639; /*0x837484*/
       FriendServerSender::EndTimeout((FriendServerSender *)this, nullptr); /*0x837490*/
-      v298 = Packet::GetString(v3, nullptr); /*0x83749c*/
-      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(v4, v298, v299); /*0x8374a8*/
-      if ( !v4->friends ) /*0x8374ac*/
+      v298 = Packet::GetString(pkt, nullptr); /*0x83749c*/
+      this = (FriendServerReceiver *)FriendServerReceiver::GetFriendByUsername(receiver, v298, v299); /*0x8374a8*/
+      if ( !receiver->friends ) /*0x8374ac*/
         goto LABEL_639; /*0x8374ac*/
       this = (FriendServerReceiver *)System::Collections::Generic::List<System::Object>::IndexOf( /*0x8374c0*/
-                                       (List_1_System_Object_ *)v4->friends,
+                                       (List_1_System_Object_ *)receiver->friends,
                                        (Object *)this,
                                        MethodInfo::System::Collections::Generic::List<Friend>::IndexOf);
-      if ( !v4->friends ) /*0x8374c4*/
+      if ( !receiver->friends ) /*0x8374c4*/
         goto LABEL_639; /*0x8374c4*/
       System::Collections::Generic::List<System::Object>::RemoveAt( /*0x8374d8*/
-        (List_1_System_Object_ *)v4->friends,
+        (List_1_System_Object_ *)receiver->friends,
         (int32_t)this,
         MethodInfo::System::Collections::Generic::List<Friend>::RemoveAt);
       if ( !byte_27E6BD3 ) /*0x8374e4*/
@@ -1849,22 +1849,22 @@ LABEL_373:
       v207 = TypeInfo::WindowControl; /*0x837c58*/
       goto LABEL_377; /*0x837c58*/
     case 0x19u: /*0x835908*/
-      v291 = Packet::GetString(v3, nullptr); /*0x8372d4*/
-      FriendByUsername = (Packet *)FriendServerReceiver::GetFriendByUsername(v4, v291, v292); /*0x8372e0*/
+      v291 = Packet::GetString(pkt, nullptr); // // case 0x19: REQ_DENIED - friend declined your join request, removes from list /*0x8372d4*/
+      FriendByUsername = (Packet *)FriendServerReceiver::GetFriendByUsername(receiver, v291, v292); /*0x8372e0*/
       if ( !FriendByUsername ) /*0x8372e4*/
         return; /*0x8372e4*/
       incoming = FriendByUsername; /*0x8372f4*/
-      this = (FriendServerReceiver *)v4->friends; /*0x8372f8*/
+      this = (FriendServerReceiver *)receiver->friends; /*0x8372f8*/
       if ( !this ) /*0x8372fc*/
         goto LABEL_639; /*0x8372fc*/
       this = (FriendServerReceiver *)System::Collections::Generic::List<System::Object>::IndexOf( /*0x837304*/
                                        (List_1_System_Object_ *)this,
                                        (Object *)incoming,
                                        MethodInfo::System::Collections::Generic::List<Friend>::IndexOf);
-      if ( !v4->friends ) /*0x837308*/
+      if ( !receiver->friends ) /*0x837308*/
         goto LABEL_639; /*0x837308*/
       System::Collections::Generic::List<System::Object>::RemoveAt( /*0x83731c*/
-        (List_1_System_Object_ *)v4->friends,
+        (List_1_System_Object_ *)receiver->friends,
         (int32_t)this,
         MethodInfo::System::Collections::Generic::List<Friend>::RemoveAt);
       if ( !byte_27E6BD3 ) /*0x837324*/
@@ -1902,9 +1902,9 @@ LABEL_373:
         return; /*0x837400*/
       goto LABEL_379; /*0x837400*/
     case 0x1Au: /*0x835908*/
-      v142 = Packet::GetString(v3, nullptr); /*0x835af4*/
-      v143 = Packet::GetString(v3, nullptr); /*0x835b04*/
-      v145 = FriendServerReceiver::GetFriendByUsername(v4, v142, v144); /*0x835b10*/
+      v142 = Packet::GetString(pkt, nullptr); // // case 0x1A: FRIEND_CHAT_MSG - received chat message from a friend /*0x835af4*/
+      v143 = Packet::GetString(pkt, nullptr); /*0x835b04*/
+      v145 = FriendServerReceiver::GetFriendByUsername(receiver, v142, v144); /*0x835b10*/
       if ( !v145 ) /*0x835b14*/
         return; /*0x835b14*/
       v146 = v145; /*0x835b28*/
@@ -1947,13 +1947,13 @@ LABEL_373:
       v152 = v146; /*0x835c10*/
       goto LABEL_444; /*0x835c14*/
     case 0x1Bu: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x83650c*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x1B: AUTH_STATUS - auth/setup progress (1=authenticating, 0=setting up private server) /*0x83650c*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x836514*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x836520*/
       v208 = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x83652c*/
       if ( !System::String::op_Equality(v208, (String *)"Game", nullptr) ) /*0x836544*/
         return; /*0x836544*/
-      v209 = Packet::GetByte(v3, nullptr); /*0x836554*/
+      v209 = Packet::GetByte(pkt, nullptr); /*0x836554*/
       if ( v209 == 1 ) /*0x83655c*/
       {
         this = (FriendServerReceiver *)TypeInfo::PopupControl->static_fields->Instance; /*0x83903c*/
@@ -1973,15 +1973,15 @@ LABEL_373:
       PopupControl::ShowConnecting((PopupControl *)this, *v210, nullptr); /*0x839054*/
       return; /*0x839058*/
     case 0x1Du: /*0x835908*/
-      if ( !byte_27E6BD5 ) /*0x83752c*/
+      if ( !byte_27E6BD5 ) // // case 0x1D: SERVER_LIST - list of public game servers /*0x83752c*/
       {
         sub_73C778( /*0x837540*/
           &TypeInfo::FriendServerSender,
           &TypeInfo::System::Action<System::Collections::Generic::Dictionary<System::String,short>>);
         byte_27E6BD5 = 1; /*0x83754c*/
       }
-      v302 = v4; /*0x837554*/
-      v303 = v3; /*0x837554*/
+      v302 = receiver; /*0x837554*/
+      v303 = pkt; /*0x837554*/
       this = (FriendServerReceiver *)TypeInfo::FriendServerSender->static_fields->Instance; /*0x83755c*/
       if ( !this ) /*0x837560*/
         goto LABEL_639; /*0x837560*/
@@ -2126,7 +2126,7 @@ LABEL_636:
       v342 = TypeInfo::UnityEngine::SceneManagement::SceneManager; /*0x837a30*/
       goto LABEL_472; /*0x837a34*/
     case 0x1Eu: /*0x835908*/
-      if ( !byte_27E6BD5 ) /*0x835c20*/
+      if ( !byte_27E6BD5 ) // // case 0x1E: JOIN_SERVER_FAILED - could not join server (full or offline) /*0x835c20*/
       {
         sub_73C778( /*0x835c38*/
           &TypeInfo::FriendServerSender,
@@ -2137,7 +2137,7 @@ LABEL_636:
       if ( !this ) /*0x835c5c*/
         goto LABEL_639; /*0x835c5c*/
       FriendServerSender::EndTimeout((FriendServerSender *)this, nullptr); /*0x835c68*/
-      v153 = Packet::GetByte(v3, nullptr); /*0x835c78*/
+      v153 = Packet::GetByte(pkt, nullptr); /*0x835c78*/
       if ( v153 == 1 ) /*0x835c80*/
       {
         this = (FriendServerReceiver *)TypeInfo::PopupControl->static_fields->Instance; /*0x8383fc*/
@@ -2176,7 +2176,7 @@ LABEL_472:
       v349 = FriendServerInterface_friend_window_screen__Enum_public_server_list; /*0x8384a0*/
       goto LABEL_634; /*0x8384a4*/
     case 0x1Fu: /*0x835908*/
-      v193 = (Object *)Packet::GetString(v3, nullptr); /*0x8362a8*/
+      v193 = (Object *)Packet::GetString(pkt, nullptr);// // case 0x1F: SERVER_ICON - server icon image data received /*0x8362a8*/
       v194 = Packet::GetByte(incominga, nullptr); /*0x8362c0*/
       v195 = nullptr; /*0x8362c8*/
       if ( v194 != 1 ) /*0x8362cc*/
@@ -2195,7 +2195,7 @@ LABEL_472:
         v195->vector[i] = (unsigned __int8)this; /*0x836328*/
       }
 LABEL_99:
-      this = (FriendServerReceiver *)v4->requesting_server_icons; /*0x836338*/
+      this = (FriendServerReceiver *)receiver->requesting_server_icons; /*0x836338*/
       if ( !this ) /*0x83633c*/
         goto LABEL_639; /*0x83633c*/
       System::Collections::Generic::List<System::Object>::Remove( /*0x83635c*/
@@ -2231,7 +2231,7 @@ LABEL_99:
       }
       else
       {
-        this = (FriendServerReceiver *)v4->cached_server_icons; /*0x838230*/
+        this = (FriendServerReceiver *)receiver->cached_server_icons; /*0x838230*/
         if ( !this ) /*0x838234*/
           goto LABEL_639; /*0x838234*/
         v201 = MethodInfo::System::Collections::Generic::Dictionary<System::String,UnityEngine::Sprite>::Add; /*0x838238*/
@@ -2260,13 +2260,13 @@ LABEL_99:
       FriendServerInterface::GotServerIcon((FriendServerInterface *)this, (String *)v193, method); /*0x8382c4*/
       return; /*0x8382c8*/
     case 0x20u: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x835ef8*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x20: CONNECT_TO_GAME - connecting to game server, pings provided /*0x835ef8*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x835f08*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x835f14*/
       v170 = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x835f20*/
       if ( !System::String::op_Equality(v170, (String *)"Game", nullptr) ) /*0x835f38*/
         return; /*0x835f38*/
-      this = (FriendServerReceiver *)Packet::GetByte(v3, nullptr); /*0x835f48*/
+      this = (FriendServerReceiver *)Packet::GetByte(pkt, nullptr); /*0x835f48*/
       if ( !TypeInfo::WindowControl->static_fields->Instance ) /*0x835f54*/
         goto LABEL_639; /*0x835f54*/
       v171 = (char)this; /*0x835f5c*/
@@ -2278,7 +2278,7 @@ LABEL_99:
       if ( v171 != 1 ) /*0x835f98*/
         v172 = (String **)&StringLiteral_Joining_game; /*0x835f98*/
       PopupControl::ShowConnecting((PopupControl *)this, *v172, nullptr); /*0x835fa0*/
-      v173 = Packet::GetShort(v3, nullptr); /*0x835fb0*/
+      v173 = Packet::GetShort(pkt, nullptr); /*0x835fb0*/
       if ( v173 < 1 ) /*0x835fb8*/
         return; /*0x835fb8*/
       this = (FriendServerReceiver *)sub_73C88C(TypeInfo::System::Collections::Generic::List<ToPing>); /*0x835fc0*/
@@ -2341,7 +2341,7 @@ LABEL_99:
         nullptr);
       return; /*0x8360f0*/
     case 0x23u: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x836918*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x23: MATCH_SETUP_FAILED - couldn't set up match on server /*0x836918*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x836920*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x83692c*/
       v242 = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x836938*/
@@ -2355,15 +2355,15 @@ LABEL_163:
       v243 = (String *)*v189; /*0x83696c*/
       goto LABEL_483; /*0x836974*/
     case 0x25u: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x835dc4*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x25: GAME_SERVER_CONNECT - connect to game server with address/port/token /*0x835dc4*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x835dd4*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x835de0*/
       v160 = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x835dec*/
       if ( System::String::op_Equality(v160, (String *)"Game", nullptr) ) /*0x835e00*/
       {
-        v161 = Packet::GetString(v3, nullptr); /*0x835e18*/
-        v162 = Packet::GetString(v3, nullptr); /*0x835e28*/
-        v163 = Packet::GetString(v3, nullptr); /*0x835e38*/
+        v161 = Packet::GetString(pkt, nullptr); /*0x835e18*/
+        v162 = Packet::GetString(pkt, nullptr); /*0x835e28*/
+        v163 = Packet::GetString(pkt, nullptr); /*0x835e38*/
         v164 = Packet::GetString(incominga, nullptr); /*0x835e48*/
         v165 = Packet::GetShort(incominga, nullptr); /*0x835e58*/
         this = (FriendServerReceiver *)Packet::GetByte(incominga, nullptr); /*0x835e64*/
@@ -2417,7 +2417,7 @@ LABEL_639:
       }
       return; /*0x838f70*/
     case 0x27u: /*0x835908*/
-      if ( !byte_27E6BD5 ) /*0x8378b0*/
+      if ( !byte_27E6BD5 ) // // case 0x27: INVITE_SENT - confirmation that invite was sent to friend /*0x8378b0*/
       {
         sub_73C778( /*0x8378c8*/
           &TypeInfo::FriendServerSender,
@@ -2454,13 +2454,13 @@ LABEL_639:
         return; /*0x8379a0*/
       goto LABEL_382; /*0x8379a0*/
     case 0x28u: /*0x835908*/
-      v333 = Packet::GetString(v3, nullptr); /*0x837870*/
-      v464.m_value = Packet::GetByte(v3, nullptr); /*0x83788c*/
+      v333 = Packet::GetString(pkt, nullptr); // // case 0x28: FRIEND_INVITE_RECEIVED - friend invited you to join their game /*0x837870*/
+      v464.m_value = Packet::GetByte(pkt, nullptr); /*0x83788c*/
       if ( (unsigned __int8)(v464.m_value - 1) > 1u ) /*0x837890*/
         v335 = (Object *)""; /*0x837e6c*/
       else
-        v335 = (Object *)Packet::GetString(v3, nullptr); /*0x8378a0*/
-      v353 = FriendServerReceiver::GetFriendByUsername(v4, v333, v334); /*0x837e78*/
+        v335 = (Object *)Packet::GetString(pkt, nullptr); /*0x8378a0*/
+      v353 = FriendServerReceiver::GetFriendByUsername(receiver, v333, v334); /*0x837e78*/
       if ( !v353 ) /*0x837e7c*/
         return; /*0x837e7c*/
       v354 = v353; /*0x837e80*/
@@ -2516,7 +2516,7 @@ LABEL_639:
         this = (FriendServerReceiver *)sub_73C778(&TypeInfo::FriendServerInterface, incoming); /*0x837fa4*/
         byte_27E6BD4 = 1; /*0x837fac*/
       }
-      v149 = v4; /*0x837fb8*/
+      v149 = receiver; /*0x837fb8*/
       v359 = TypeInfo::FriendServerInterface->static_fields->Instance; /*0x837fc4*/
       if ( !v359 ) /*0x837fc8*/
         goto LABEL_639; /*0x837fc8*/
@@ -2527,7 +2527,7 @@ LABEL_639:
       v361 = (String **)&StringLiteral__they_invited_me_; /*0x837fe0*/
       goto LABEL_436; /*0x837fe4*/
     case 0x29u: /*0x835908*/
-      v190 = Packet::GetString(v3, nullptr); /*0x836200*/
+      v190 = Packet::GetString(pkt, nullptr); // // case 0x29: ACCEPT_INVITE - server telling client to accept/process invite /*0x836200*/
       if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x836204*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x836210*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x83621c*/
@@ -2547,8 +2547,8 @@ LABEL_639:
         FriendServerSender::SendAcceptInviteFailed((FriendServerSender *)this, v190, 0, nullptr); /*0x837cc0*/
       return; /*0x836290*/
     case 0x2Au: /*0x835908*/
-      v214 = Packet::GetString(v3, nullptr); /*0x83660c*/
-      v215 = Packet::GetByte(v3, nullptr); /*0x83661c*/
+      v214 = Packet::GetString(pkt, nullptr); // // case 0x2A: JOIN_FAILED - could not join (friend offline or went to main menu) /*0x83660c*/
+      v215 = Packet::GetByte(pkt, nullptr); /*0x83661c*/
       if ( v215 == 1 ) /*0x836624*/
       {
         v216 = TypeInfo::PopupControl->static_fields; /*0x8384b0*/
@@ -2571,7 +2571,7 @@ LABEL_483:
       PopupControl::ShowMessage((PopupControl *)this, v243, PopupControl_context__Enum_message, nullptr); /*0x8384e0*/
       return; /*0x8384e8*/
     case 0x2Bu: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x836d00*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x2B: HIDE_POPUPS - hide all popups /*0x836d00*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x836d08*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x836d14*/
       v266 = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x836d20*/
@@ -2583,8 +2583,8 @@ LABEL_483:
       PopupControl::HideAll((PopupControl *)this, nullptr); /*0x836d50*/
       return; /*0x836d54*/
     case 0x2Cu: /*0x835908*/
-      v218 = Packet::GetString(v3, nullptr); /*0x836650*/
-      v220 = FriendServerReceiver::GetFriendByUsername(v4, v218, v219); /*0x83665c*/
+      v218 = Packet::GetString(pkt, nullptr); // // case 0x2C: FRIEND_WORLD_UPDATE - friend's world/location string updated /*0x836650*/
+      v220 = FriendServerReceiver::GetFriendByUsername(receiver, v218, v219); /*0x83665c*/
       if ( !v220 ) /*0x836660*/
         return; /*0x836660*/
       v222 = v220; /*0x83666c*/
@@ -2618,13 +2618,13 @@ LABEL_483:
       FriendServerInterface::RedrawChat((FriendServerInterface *)this, v222->chat, method); /*0x836754*/
       return; /*0x836758*/
     case 0x2Du: /*0x835908*/
-      v339 = Packet::GetString(v3, nullptr); /*0x8379e4*/
-      v465.m_value = Packet::GetByte(v3, nullptr); /*0x837a00*/
+      v339 = Packet::GetString(pkt, nullptr); // // case 0x2D: FRIEND_JOIN_REQUEST - friend wants to join your game (ALLOW button) /*0x8379e4*/
+      v465.m_value = Packet::GetByte(pkt, nullptr); /*0x837a00*/
       if ( (unsigned __int8)(v465.m_value - 1) > 1u ) /*0x837a04*/
         v341 = (Object *)""; /*0x837ff0*/
       else
-        v341 = (Object *)Packet::GetString(v3, nullptr); /*0x837a14*/
-      v362 = FriendServerReceiver::GetFriendByUsername(v4, v339, v340); /*0x837ffc*/
+        v341 = (Object *)Packet::GetString(pkt, nullptr); /*0x837a14*/
+      v362 = FriendServerReceiver::GetFriendByUsername(receiver, v339, v340); /*0x837ffc*/
       if ( !v362 ) /*0x838000*/
         return; /*0x838000*/
       v354 = v362; /*0x838004*/
@@ -2680,7 +2680,7 @@ LABEL_483:
         this = (FriendServerReceiver *)sub_73C778(&TypeInfo::FriendServerInterface, incoming); /*0x838128*/
         byte_27E6BD4 = 1; /*0x838130*/
       }
-      v149 = v4; /*0x83813c*/
+      v149 = receiver; /*0x83813c*/
       v365 = TypeInfo::FriendServerInterface->static_fields->Instance; /*0x838148*/
       if ( !v365 ) /*0x83814c*/
         goto LABEL_639; /*0x83814c*/
@@ -2733,22 +2733,22 @@ LABEL_589:
       }
       return; /*0x838220*/
     case 0x2Eu: /*0x835908*/
-      this = (FriendServerReceiver *)TypeInfo::PopupControl->static_fields->Instance; /*0x8361cc*/
+      this = (FriendServerReceiver *)TypeInfo::PopupControl->static_fields->Instance;// // case 0x2E: REPORT_SUBMITTED - report was submitted successfully /*0x8361cc*/
       if ( !this ) /*0x8361d0*/
         goto LABEL_639; /*0x8361d0*/
       v189 = &StringLiteral_Report_submitted_u000AWe_will_review; /*0x8361d8*/
       goto LABEL_163; /*0x8361dc*/
     case 0x2Fu: /*0x835908*/
-      v296 = (FriendServerReceiver *)Packet::GetByte(v3, nullptr); /*0x837410*/
+      v296 = (FriendServerReceiver *)Packet::GetByte(pkt, nullptr);// // case 0x2F: WARNING - show warning message /*0x837410*/
       if ( (_BYTE)v296 ) /*0x837418*/
         FriendServerReceiver::ShowWarning(v296, (uint8_t)v296, v297); /*0x837420*/
       return; /*0x837424*/
     case 0x34u: /*0x835908*/
-      v337 = Packet::GetShort(v3, nullptr); /*0x8379b0*/
-      FriendServerReceiver::ShowReceiveGems(v4, v337, v338); /*0x8379bc*/
+      v337 = Packet::GetShort(pkt, nullptr); // // case 0x34: RECEIVE_GEMS - received gems notification /*0x8379b0*/
+      FriendServerReceiver::ShowReceiveGems(receiver, v337, v338); /*0x8379bc*/
       return; /*0x8379c0*/
     case 0x37u: /*0x835908*/
-      v131 = Packet::GetString(v3, nullptr); /*0x8359fc*/
+      v131 = Packet::GetString(pkt, nullptr); // // case 0x37: TROPHY_RECEIVED - new trophy awarded to player /*0x8359fc*/
       v132 = Packet::GetString(incominga, nullptr); /*0x835a0c*/
       v133 = Packet::GetString(incominga, nullptr); /*0x835a1c*/
       v134 = Packet::GetString(incominga, nullptr); /*0x835a2c*/
@@ -2808,7 +2808,7 @@ LABEL_589:
       FriendServerInterface::ShowNewGiftsNotif((FriendServerInterface *)this, (MethodInfo *)incoming); /*0x837b04*/
       return; /*0x837b08*/
     case 0x3Eu: /*0x835908*/
-      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor ) /*0x83703c*/
+      if ( !TypeInfo::UnityEngine::SceneManagement::SceneManager->_1.cctor_finished_or_no_cctor )// // case 0x3E: CONNECT_FAILED - ERROR_403 / failed to connect to server /*0x83703c*/
         j_il2cpp_runtime_class_init_0(TypeInfo::UnityEngine::SceneManagement::SceneManager); /*0x837044*/
       v466.m_Handle = UnityEngine::SceneManagement::SceneManager::GetActiveScene(nullptr).m_Handle; /*0x837050*/
       v277 = UnityEngine::SceneManagement::Scene::get_name(&v466, nullptr); /*0x83705c*/
