@@ -39,6 +39,20 @@
 //
 //  ─── Containers (reserved) ─────────────────────────────────────────────────
 //  [4]  container_count: u32 le = 0
+//
+//  ─── Teleporters (v5+) ─────────────────────────────────────────────────────
+//  [4]  teleporter_count: u32 le
+//  per teleporter:
+//    [str] zone
+//    [2]  cx: i16 le   [2] cz: i16 le   [2] tx: i16 le   [2] tz: i16 le
+//    [str] title
+//    [str] description
+//    [str] built_by
+//    [4]  screenshot_len: u32 le
+//    [N]  screenshot bytes
+//
+//  (v4 stored per-chunk teleporter titles after land claims; those are
+//  migrated into world-level entries with an empty built_by on load.)
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -50,10 +64,10 @@ use super::baskets::BasketStore;
 use super::generator::{BiomeWeights, WorldGenerator, WorldTemplate, ZoneConfig};
 use super::parse_shack_info;
 use super::special_generators;
-use super::world_state::{Chunk, ChunkElement, InteriorData, LandClaim, WorldState, ZoneEntry};
+use super::world_state::{Chunk, ChunkElement, InteriorData, LandClaim, Teleporter, WorldState, ZoneEntry};
 
 const MAGIC: &[u8; 4] = b"HAMP";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 pub const FILE_NAME: &str = "world.hws";
 
 // ── Low-level write helpers ───────────────────────────────────────────────
@@ -160,17 +174,26 @@ fn write_state<W: Write>(state: &WorldState, w: &mut W) -> io::Result<()> {
             wstr(w, &claim.user2)?;
             wu64(w, claim.expires_at_secs)?;
         }
-        wu16(w, chunk.tele_data.len() as u16)?;
-        for ((cx, cz), (title, desc)) in &chunk.tele_data {
-            wu8(w, *cx)?;
-            wu8(w, *cz)?;
-            wstr(w, title)?;
-            wstr(w, desc)?;
-        }
     }
 
     // Containers (reserved)
     wu32(w, 0)?;
+
+    // Teleporters
+    let teles = state.teleporters.read().unwrap();
+    wu32(w, teles.len() as u32)?;
+    for t in teles.iter() {
+        wstr(w, &t.zone)?;
+        wi16(w, t.cx)?;
+        wi16(w, t.cz)?;
+        wi16(w, t.tx)?;
+        wi16(w, t.tz)?;
+        wstr(w, &t.title)?;
+        wstr(w, &t.description)?;
+        wstr(w, &t.built_by)?;
+        wu32(w, t.screenshot.len() as u32)?;
+        w.write_all(&t.screenshot)?;
+    }
 
     Ok(())
 }
@@ -191,7 +214,7 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "not a HAMP world file"));
     }
     let version = ru8(&mut r)?;
-    if version < 1 || version > 4 {
+    if version < 1 || version > 5 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unsupported world file version {version}"),
@@ -239,6 +262,7 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
     // Chunks
     let chunk_count = ru32(&mut r)? as usize;
     let mut chunks: HashMap<String, HashMap<(i16, i16), Chunk>> = HashMap::new();
+    let mut teleporters: Vec<Teleporter> = Vec::new();
     for _ in 0..chunk_count {
         let x          = ri16(&mut r)?;
         let z          = ri16(&mut r)?;
@@ -271,23 +295,52 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
                 land_claims.insert(claim_key.clone(), LandClaim { claim_key, user0, user1, user2, expires_at_secs });
             }
         }
-        let mut tele_data = std::collections::HashMap::new();
-        if version >= 4 {
+        // v4 stored per-chunk teleporter titles; migrate to world-level entries.
+        if version == 4 {
             let tele_count = ru16(&mut r)? as usize;
             for _ in 0..tele_count {
-                let cx    = ru8(&mut r)?;
-                let cz    = ru8(&mut r)?;
+                let tx    = ru8(&mut r)?;
+                let tz    = ru8(&mut r)?;
                 let title = rstr(&mut r)?;
                 let desc  = rstr(&mut r)?;
-                tele_data.insert((cx, cz), (title, desc));
+                teleporters.push(Teleporter {
+                    title,
+                    description: desc,
+                    zone: zone.clone(),
+                    cx: x, cz: z,
+                    tx: tx as i16, tz: tz as i16,
+                    built_by: String::new(),
+                    screenshot: Vec::new(),
+                });
             }
         }
         chunks.entry(zone.clone()).or_default()
-            .insert((x, z), Chunk { x, z, zone, biome, floor_rot, floor_tex, floor_model, mob_a, mob_b, elements, land_claims, tele_data });
+            .insert((x, z), Chunk { x, z, zone, biome, floor_rot, floor_tex, floor_model, mob_a, mob_b, elements, land_claims });
     }
 
     // Containers (reserved — skip count, nothing to read)
     let _container_count = ru32(&mut r)?;
+
+    // Teleporters (v5+)
+    if version >= 5 {
+        let tele_count = ru32(&mut r)? as usize;
+        for _ in 0..tele_count {
+            let zone  = rstr(&mut r)?;
+            let cx    = ri16(&mut r)?;
+            let cz    = ri16(&mut r)?;
+            let tx    = ri16(&mut r)?;
+            let tz    = ri16(&mut r)?;
+            let title = rstr(&mut r)?;
+            let desc  = rstr(&mut r)?;
+            let built_by = rstr(&mut r)?;
+            let shot_len = ru32(&mut r)? as usize;
+            let mut screenshot = vec![0u8; shot_len];
+            r.read_exact(&mut screenshot)?;
+            teleporters.push(Teleporter {
+                title, description: desc, zone, cx, cz, tx, tz, built_by, screenshot,
+            });
+        }
+    }
 
     // Rebuild the interior zone registry from saved chunk elements.
     // On first run this is done live as items are placed (0x20 handler).
@@ -328,6 +381,7 @@ pub fn load(path: &Path) -> io::Result<WorldState> {
         players: RwLock::new(HashMap::new()),
         baskets: BasketStore::new(),
         zones:   RwLock::new(zones),
+        teleporters: RwLock::new(teleporters),
         generator: WorldGenerator::new(template),
     })
 }

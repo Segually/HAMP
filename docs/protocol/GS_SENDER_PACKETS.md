@@ -615,7 +615,8 @@ qid: 3 (cosmetic/best-effort)
 ---
 
 ### `0x30` — TELEPORTER_SCREENSHOT  (`SendTeleporterScreenshot`, 0x85e5ac)
-Uploads a screenshot PNG for a custom teleporter.
+Uploads a screenshot PNG for a custom teleporter.  The coordinates are the
+teleporter object's own location (its identity key).
 
 ```
 u8        0x30
@@ -624,11 +625,30 @@ i16       chunk_x
 i16       chunk_z
 i16       inner_x
 i16       inner_z
-i64       byte_count
+i32       byte_count        (PutLong = 4 bytes)
 byte_count × u8   screenshot_png_bytes
 ```
 
 qid: 2
+
+---
+
+### `0x31` — REQUEST_TELE_SCREENSHOT  (`RequestTeleporterScreenshot`, 0x8605b8)
+Requests the screenshot for a listed teleporter (sent by
+`DrawOnlineTeleporterSlot` on a cache miss).  Fields are the
+`OnlineTeleporter.to_*` values — i.e. the teleporter's own location.
+Server answers with S→C `0x32`.
+
+```
+u8      0x31
+String  zone_name
+i16     chunk_x
+i16     chunk_z
+i16     inner_x
+i16     inner_z
+```
+
+qid: 3 (LOW priority)
 
 ---
 
@@ -726,15 +746,27 @@ qid: 2
 
 ---
 
-### `0x2E` — REQUEST_PAGE_OF_TELEPORTERS  (`RequestPageOfTeleportersByPageNumber`, 0x8603fc)
-Requests one page of teleporter listings from the server (or relays to the host).
+### `0x2E` — REQUEST_PAGE_OF_TELEPORTERS  (`RequestPageOfTeleportersByPageNumber`, 0x8603fc / `RequestPageOfTeleportersByTeleStr`, 0x8604b8)
+Requests one page of teleporter listings.  Two modes, selected by the first
+byte after the opcode:
 
 ```
 u8      0x2E
-u8      0               (constant zero, padding/reserved)
-u8      in_search_page  1 = search results page, 0 = normal listing
-i16     page            page number (0-based)
+u8      mode
+[mode == 0]  (ByPageNumber):
+  u8    in_search_page  1 = page through current search results
+  i16   page            page number (0-based)
+[mode == 1]  (ByTeleStr — "what page is the teleporter at this location on"):
+  String  zone_name
+  i16     chunk_x
+  i16     chunk_z
+  i16     inner_x
+  i16     inner_z
 ```
+
+NOTE: the host-side parser (OnReceive case 0x2E) does **not** read the
+`in_search_page` byte — the server must consume it before relaying mode-0
+requests to a host, or the host reads a garbage page number.
 
 qid: 2
 
@@ -748,25 +780,41 @@ u8      0x2F
 String  requester_username
 i16     page
 u8      has_more_pages    1 = more pages available
-[repeated teleporter entries, sentinel-terminated]
+up to 3 × entry:
+  u8      1
+  String  title
+  String  description
+  String  tele_str          ("zone,cx,cz,ix,iz")
+  String  zone_name
+  i16     chunk_x
+  i16     chunk_z
+  i16     inner_x
+  i16     inner_z
+(3 - n) × u8 0   (one sentinel per empty slot)
 ```
+
+BROKEN IN HA_200613: the client's own S→C `0x2F` parser additionally expects
+an `is_search` byte after `page` and a trailing `built_by` String per entry,
+neither of which this packer writes.  The server must repack host pages
+(insert `is_search = 0`, append `built_by = host`) or the client desyncs.
 
 qid: 2
 
 ---
 
 ### `0x33` — FINISHED_EDITING_TELEPORTER  (`SendFinishedEditingTeleporter`, 0x86069c)
-Submits edited teleporter metadata (title, description, zone tag, and 4 coordinate values).
+Submits edited teleporter metadata.  The coordinates are the teleporter
+object's own location (its identity key).
 
 ```
 u8      0x33
 String  title
 String  description
-String  zone_tag
-i16     coord_x
-i16     coord_y
-i16     coord_z
-i16     coord_w
+String  zone_name
+i16     chunk_x
+i16     chunk_z
+i16     inner_x
+i16     inner_z
 ```
 
 qid: 2

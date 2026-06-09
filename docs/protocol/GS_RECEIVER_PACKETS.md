@@ -831,9 +831,8 @@ i16     instrument_index
 ### `0x2E` — REQUEST_TELE_PAGE  (server → host client)
 *case 45*
 
-Server relays a teleporter page request to the host client.  A non-host player
-searched for teleporters; the server asks the host to prepare and send back a
-page of results via **C→S `PackPageOfTeleporters`**.
+Server relays a teleporter page request to the host client.  The host
+prepares and sends back a page via **C→S `PackPageOfTeleporters`**.
 
 Two modes:
 - **mode 0** — request by page number
@@ -842,8 +841,8 @@ Two modes:
 Wire:
 ```
 u8      0x2E
-String  category        (teleporter category filter; "" = all)
-u8      mode            (0 = by page number, 1 = by location)
+String  requester_username   (prepended by the server when relaying)
+u8      mode                 (0 = by page number, 1 = by location)
 [mode == 0]:
   i16   page_number
 [mode == 1]:
@@ -854,80 +853,91 @@ u8      mode            (0 = by page number, 1 = by location)
   i16     inner_z
 ```
 
+NOTE: the C→S form of mode 0 carries an `in_search_page` byte between `mode`
+and `page_number` which this parser does NOT read — the server must strip it
+when relaying (see GS_SENDER_PACKETS.md `0x2E`).
+
 Host client responds with **C→S `PackPageOfTeleporters`** (0x858aac) — see
-GS_SENDER_PACKETS.md `0x2F`.
+GS_SENDER_PACKETS.md `0x2F`.  Mode 1 resolves the page via
+`CustomTeleporterControl.GetCustomTeleId` + `FindCorrespondingTelePage`.
 
 ---
 
 ### `0x2F` — TELEPORTER_LIST_PAGE
 *case 46*
 
-Server delivers a page of teleporter search results to the requesting client.
-Opens the teleporter search UI and populates the display slots.
+Server delivers a page of teleporter listings (or search results) to the
+requesting client.  Populates the 3-slot online-teleporter pager.
 
 Wire:
 ```
 u8      0x2F
-i16     has_more_pages   (0 = this is the last or only page)
-u8      page_or_meta_0   (read; exact role not visible in client logic)
-u8      page_or_meta_1   (read; exact role not visible in client logic)
-(while GetByte() == 1):  one teleporter entry follows
+i16     page             (current page number; page != 0 shows the left arrow)
+u8      is_search        (1 = page belongs to the search-results screen;
+                          stored into CustomTeleporterControl.search_page)
+u8      has_more         (1 = shows the right/next-page arrow)
+(while GetByte() == 1, max 3):  one teleporter entry follows
   String  title
   String  description
-  String  tele_str        (teleporter destination / unique ID string)
+  String  tele_str        (identity string "zone,cx,cz,ix,iz")
   String  to_zone
-  i16     to_chunkX
-  i16     to_chunkZ
+  i16     to_chunkX       } location of the teleporter object
+  i16     to_chunkZ       } (teleporting brings you TO it)
   i16     to_innerX
   i16     to_innerZ
   String  built_by        (builder username)
-u8      0x00             (sentinel byte: end of list)
+u8      0x00             (terminator; absent when exactly 3 entries sent)
 ```
 
 Entries fill display slots in order: `teleporter_L`, `teleporter_mid`,
-`teleporter_R`, then additional items in the crafting/results list.
-If `has_more_pages == 0` and no entries arrived, shows a "no results" popup.
-Client calls `inventory_ctr.LayOutCraftingTab(0)` before processing.
+`teleporter_R` via `DrawOnlineTeleporterSlot` (which issues C→S `0x31`
+screenshot requests on cache miss, keyed by `tele_str`).
+If `in_search_screen` and no entries arrived on page 0, shows
+"0 results found".  Client calls `inventory_ctr.LayOutCraftingTab(0)`
+before processing.
 
 ---
 
 ## Teleporter Management
 
-### `0x30` — TELEPORTER_DATA
+### `0x30` — TELE_SCREENSHOT  (broadcast of an upload)
 *case 47*
 
-Server delivers a custom teleporter's metadata and thumbnail.
+Another player uploaded a teleporter screenshot.  If the receiving client
+tracks this teleporter in its local list (`GetCustomTeleId != -1`, i.e. it is
+the builder/host), the image is written to the local save as
+`tele_graphic_<local_id>`; everyone else ignores it.
 
-Wire:
+Wire (same layout as the C→S upload):
 ```
 u8      0x30
 String  zone_name
 i16     chunk_x
 i16     chunk_z
-i16     sub_x
-i16     sub_z
-i64     image_byte_count
-image_byte_count × u8   image_bytes   (raw PNG/texture)
+i16     inner_x
+i16     inner_z
+i32     image_byte_count   (GetLong = 4 bytes)
+image_byte_count × u8   image_bytes   (PNG)
 ```
-
-→ `CustomTeleporterControl.GetCustomTeleId` to locate the teleporter.
 
 ---
 
-### `0x31` — TELEPORTER_SCREENSHOT_UPDATE
+### `0x31` — REQ_TELE_SCREENSHOT  (server → host client)
 *case 48*
 
-Server updates a teleporter entry with a new screenshot from the host.
+Server relays a guest's screenshot request to the host.  If the host has the
+`tele_graphic_<id>` file for this teleporter, it replies with C→S `0x32`:
+`[requester][zone][cx][cz][ix][iz][i32 len][bytes]`.
 
 Wire:
 ```
 u8      0x31
-String  display_name
+String  requester_username   (prepended by the server when relaying)
 String  zone_name
 i16     chunk_x
 i16     chunk_z
-i16     sub_x
-i16     sub_z
+i16     inner_x
+i16     inner_z
 ```
 
 ---
@@ -935,38 +945,43 @@ i16     sub_z
 ### `0x32` — TELEPORTER_TEXTURE
 *case 49*
 
-Server pushes a teleporter's preview texture bytes (150×150 px).
+Server pushes a teleporter's preview screenshot.  Cached as a Sprite keyed by
+`tele_str` and applied to whichever pager slot (`teleporter_L/mid/R`) matches.
 
 Wire:
 ```
 u8      0x32
-String  tele_id
-i64     byte_count
-byte_count × u8   texture_bytes
+String  tele_str          (identity string "zone,cx,cz,ix,iz")
+i32     byte_count        (GetLong = 4 bytes)
+byte_count × u8   image_bytes
 ```
+
+NOTE: the host's C→S `0x32` reply carries `[zone][cx][cz][ix][iz]` instead of
+`tele_str` — the server must rebuild the identity string when routing.
 
 Decoded via `UnityEngine.ImageConversion.LoadImage` into a 150×150 `Texture2D`.
 
 ---
 
-### `0x33` — TELEPORTER_SCREENSHOT_FROM_PLAYER
+### `0x33` — EDIT_TELEPORTER  (broadcast of a title/description edit)
 *case 50*
 
-A teleporter screenshot taken by another player is broadcast.
+Someone finished editing a teleporter's title/description.  If the receiving
+client tracks this teleporter in its local list (`GetCustomTeleId != -1`),
+the new name/description are written into local PlayerData
+(`teleporter_<id>_name` / `_desc`); everyone else ignores it.
 
-Wire:
+Wire (same layout as C→S `SendFinishedEditingTeleporter`):
 ```
 u8      0x33
-String  photographer_username
-String  destination_name
+String  title
+String  description
 String  zone_name
 i16     chunk_x
 i16     chunk_z
-i16     sub_x
-i16     sub_z
+i16     inner_x
+i16     inner_z
 ```
-
-→ `PlayerData` receives the save path info for the teleporter screenshot.
 
 ---
 

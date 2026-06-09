@@ -94,6 +94,12 @@ pub struct Config {
     /// the world origin. 0 disables.
     pub start_biome_radius: i16,
 
+    /// Usernames treated as administrators on the managed game server.
+    /// Teleporters set up by these users are listed first and marked with ★
+    /// in the teleporter list, standing in for the old public servers'
+    /// separate moderator-teleporter list.
+    pub admin_users: Vec<String>,
+
     /// Whether PVP (player-vs-player damage) is enabled on this game server.
     /// When false (default), `CombatControl$HitAllowed` blocks all player
     /// damage on the client side.  Set to true to enable combat between players.
@@ -165,6 +171,7 @@ impl Default for Config {
             start_biome:               "Grassland".to_string(),
             start_biome_radius:         3,
 
+            admin_users:    Vec::new(),
             pvp_enabled:    false,
             log_packets:    true,
 
@@ -294,6 +301,10 @@ biome_sakura_commonness    = 0.50
 #        "Woodlands", "Sakura".  Empty string disables.
 start_biome        = "Grassland"
 start_biome_radius = 3
+
+# Usernames treated as administrators on the managed game server.
+# Their teleporters are listed first and marked with ★.
+# admin_users = ["SomeAdmin", "AnotherAdmin"]
 
 # Enable player-vs-player combat (default: false).
 # pvp_enabled = false

@@ -69,9 +69,10 @@ fn pkt_name(pid: u8) -> &'static str {
         0x2B => "USED_UNIQUE_ID",
         0x2D => "MUSIC_BOX_NOTE",
         0x2E => "REQ_TELE_PAGE",
-        0x2F => "REQ_TELEPORTERS",
+        0x2F => "TELE_PAGE_DATA",
         0x30 => "TELE_SCREENSHOT",
         0x31 => "REQ_TELE_SCREENSHOT",
+        0x32 => "TELE_SCREENSHOT_RESP",
         0x33 => "EDIT_TELEPORTER",
         0x34 => "NEW_TELE_SEARCH",
         0x35 => "MINIGAME_CHALLENGE",
@@ -106,6 +107,8 @@ fn pkt_name(pid: u8) -> &'static str {
         0x58 => "MOB_TARGET_SYNC",
         0x59 => "CREATE_MOB",
         0x5A => "BANDIT_FLAG_DEST",
+        0xE0 => "MOD_HELLO",
+        0xE1 => "MOD_CHANNEL",
         _    => "UNKNOWN",
     }
 }
@@ -198,10 +201,18 @@ pub(crate) struct Session {
     pending_containers: Mutex<HashMap<String, Vec<String>>>,
     /// Basket locking: basket_id → username of the player currently holding it open.
     open_baskets: Mutex<HashMap<i64, (String, String)>>,
+    /// Usernames whose teleporters are listed first and marked with ★ (managed mode).
+    admin_users: Vec<String>,
+    /// Last teleporter search term per player (managed mode). Search-page
+    /// requests (0x2E with in_search=1) page through results for this term.
+    tele_search: Mutex<HashMap<String, String>>,
+    /// Players that completed the MOD_HELLO (0xE0) handshake, keyed by
+    /// username. Custom packets are only ever sent to players in this map.
+    mod_clients: Mutex<HashMap<String, ModClientInfo>>,
 }
 
 impl Session {
-    fn new(room_token: impl Into<String>, mode: SessionMode, pvp_enabled: bool, log_packets: bool) -> Arc<Self> {
+    fn new(room_token: impl Into<String>, mode: SessionMode, pvp_enabled: bool, log_packets: bool, admin_users: Vec<String>) -> Arc<Self> {
         Arc::new(Self {
             room_token: room_token.into(),
             mode,
@@ -214,7 +225,14 @@ impl Session {
             pending_chunks: Mutex::new(HashMap::new()),
             pending_containers: Mutex::new(HashMap::new()),
             open_baskets: Mutex::new(HashMap::new()),
+            admin_users,
+            tele_search: Mutex::new(HashMap::new()),
+            mod_clients: Mutex::new(HashMap::new()),
         })
+    }
+
+    fn is_admin(&self, user: &str) -> bool {
+        self.admin_users.iter().any(|a| a.eq_ignore_ascii_case(user))
     }
 
     pub(crate) fn player_count(&self) -> usize {
@@ -390,6 +408,271 @@ fn parse_item_id(data: &[u8]) -> Option<String> {
     None
 }
 
+/// One row of the ordered teleporter listing (raw title, no display markup).
+struct TeleListEntry {
+    title: String,
+    description: String,
+    tele_str: String,
+    zone: String,
+    cx: i16,
+    cz: i16,
+    tx: i16,
+    tz: i16,
+    built_by: String,
+    is_admin: bool,
+}
+
+impl TeleListEntry {
+    /// Packs this entry in the S→C 0x2F / hamp:tele wire layout:
+    /// [str title][str desc][str tele_str][str zone][i16×4][str built_by].
+    /// `title` lets callers apply display markup (e.g. the ★ admin prefix).
+    fn pack_into(&self, pkt: &mut Vec<u8>, title: &str) {
+        pkt.extend(pack_string(title));
+        pkt.extend(pack_string(&self.description));
+        pkt.extend(pack_string(&self.tele_str));
+        pkt.extend(pack_string(&self.zone));
+        pkt.extend_from_slice(&self.cx.to_le_bytes());
+        pkt.extend_from_slice(&self.cz.to_le_bytes());
+        pkt.extend_from_slice(&self.tx.to_le_bytes());
+        pkt.extend_from_slice(&self.tz.to_le_bytes());
+        pkt.extend(pack_string(&self.built_by));
+    }
+}
+
+/// Builds the ordered teleporter listing for a managed world: admin-built
+/// teleporters first (stable creation order within each group), optionally
+/// filtered by a case-insensitive title substring search.
+fn tele_listing(session: &Session, ws: &WorldState, search_term: &str) -> Vec<TeleListEntry> {
+    let term = search_term.to_lowercase();
+    let teles = ws.teleporters.read().unwrap();
+    let mut list: Vec<_> = teles.iter()
+        .filter(|t| t.is_listed())
+        .filter(|t| term.is_empty() || t.title.to_lowercase().contains(&term))
+        .collect();
+    list.sort_by_key(|t| !session.is_admin(&t.built_by)); // stable: admins first
+    list.into_iter().map(|t| TeleListEntry {
+        title: t.title.clone(),
+        description: t.description.clone(),
+        tele_str: t.tele_str(),
+        zone: t.zone.clone(),
+        cx: t.cx, cz: t.cz, tx: t.tx, tz: t.tz,
+        built_by: t.built_by.clone(),
+        is_admin: session.is_admin(&t.built_by),
+    }).collect()
+}
+
+/// Sends one S→C 0x2F teleporter page to `requester` (managed mode).
+///
+/// Wire format (RE'd from GSR OnReceive case 0x2F):
+///   [i16 page][u8 is_search][u8 has_more]
+///   up to 3 × [u8 1][str title][str desc][str tele_str][str zone]
+///              [i16 cx][i16 cz][i16 tx][i16 tz][str built_by]
+///   [u8 0] terminator when fewer than 3 entries
+fn send_tele_page(session: &Session, ws: &WorldState, requester: &str, page: i16, is_search: bool) {
+    let term = if is_search {
+        session.tele_search.lock().unwrap().get(requester).cloned().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let list = tele_listing(session, ws, &term);
+
+    let start = (page.max(0) as usize) * 3;
+    let has_more = start + 3 < list.len();
+
+    let mut pkt = vec![0x2Fu8];
+    pkt.extend_from_slice(&page.to_le_bytes());
+    pkt.push(is_search as u8);
+    pkt.push(has_more as u8);
+    let mut count = 0;
+    for e in list.iter().skip(start).take(3) {
+        pkt.push(1);
+        // ★ prefix marks admin teleporters in the stock single-list UI.
+        let title = if e.is_admin { format!("★ {}", e.title) } else { e.title.clone() };
+        e.pack_into(&mut pkt, &title);
+        count += 1;
+    }
+    if count < 3 {
+        pkt.push(0);
+    }
+    session.send_to(requester, &pkt);
+}
+
+// ── HAModHelper custom-packet layer ───────────────────────────────────────
+//
+// Opcodes 0xE0/0xE1 sit far outside the game's range (max 0x5A); the stock
+// client's OnReceive hits `default: return` on them, so they are safe even
+// if one slips through. The server still only *sends* custom packets to
+// players that completed the MOD_HELLO handshake.
+// Spec: docs/protocol/HAMP_MOD_PROTOCOL.md.
+
+/// Version of the HAMP ↔ HAModHelper custom packet protocol.
+const MOD_PROTOCOL_VERSION: i16 = 1;
+
+/// Channels this server understands, advertised in MOD_WELCOME.
+const MOD_CHANNELS: &[&str] = &["hamp:core", "hamp:tele"];
+
+/// Grace period for a relay guest to send MOD_HELLO before the mod-match
+/// check treats them as unmodded.
+const MOD_CHECK_GRACE_SECS: u64 = 10;
+
+/// Per-player handshake data from MOD_HELLO (0xE0).
+#[allow(dead_code)]
+struct ModClientInfo {
+    protocol: i16,
+    helper_version: String,
+    mods: Vec<String>,
+}
+
+/// Sends a MOD_CHANNEL (0xE1) message to one player.
+/// Silently does nothing if the player never sent MOD_HELLO.
+fn send_mod_channel(session: &Session, target: &str, channel: &str, payload: &[u8]) {
+    if !session.mod_clients.lock().unwrap().contains_key(target) {
+        return;
+    }
+    let mut pkt = vec![0xE1u8];
+    pkt.extend(pack_string(channel));
+    pkt.extend_from_slice(payload);
+    session.send_to(target, &pkt);
+}
+
+/// Returns a player's effective mod set: sorted mod ids if they completed
+/// MOD_HELLO, empty otherwise. Vanilla and "HAModHelper with zero mods" are
+/// deliberately equivalent — only actual mods gate compatibility.
+fn effective_modset(session: &Session, user: &str) -> Vec<String> {
+    session.mod_clients.lock().unwrap().get(user)
+        .map(|m| {
+            let mut v = m.mods.clone();
+            v.sort();
+            v
+        })
+        .unwrap_or_default()
+}
+
+/// Relay-mode mod compatibility check for a guest against the session host.
+/// Returns a kick reason when the effective mod sets differ.
+fn relay_mod_mismatch(session: &Session, uid: &str) -> Option<String> {
+    if !matches!(session.mode, SessionMode::Relay) {
+        return None;
+    }
+    let host = session.host.lock().unwrap().clone()?;
+    if host == uid {
+        return None;
+    }
+    let host_mods = effective_modset(session, &host);
+    let guest_mods = effective_modset(session, uid);
+    if host_mods == guest_mods {
+        return None;
+    }
+    Some(if guest_mods.is_empty() {
+        format!("This world requires mods: {}", host_mods.join(", "))
+    } else if host_mods.is_empty() {
+        format!("This world is unmodded — your mods must be disabled to join: {}", guest_mods.join(", "))
+    } else {
+        format!("Mod mismatch — world runs: {} | you run: {}", host_mods.join(", "), guest_mods.join(", "))
+    })
+}
+
+/// Kicks a player: best-effort reason via chat and hamp:core (modded clients
+/// can show a proper dialog), then drops the connection. The player's read
+/// thread runs the normal disconnect cleanup.
+fn kick_player(session: &Session, uid: &str, reason: &str) {
+    println!("[GAME:'{}'] Kicking '{}': {}", session.room_token, uid, reason);
+    session.send_to(uid, &ChatBroadcast {
+        player_id:    "",
+        display_name: "[Server]",
+        message:      reason,
+        chat_type:    0,
+    });
+    let mut body = vec![0x01u8]; // hamp:core 0x01 = kick notice
+    body.extend(pack_string(reason));
+    send_mod_channel(session, uid, "hamp:core", &body);
+    if let Some(p) = session.players.lock().unwrap().get(uid) {
+        let _ = p.sink.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Dispatches a MOD_CHANNEL (0xE1) message from a modded client.
+/// Unknown channels are dropped (logged when log_packets is on) so client
+/// mods can probe for server support without consequences.
+fn handle_mod_channel(session: &Session, uid: &str, channel: &str, payload: &[u8]) {
+    match channel {
+        // hamp:core — server→client notices only:
+        //   S→C [u8 0x01][str reason]  kick notice, sent just before disconnect.
+        // Client→server messages on this channel are ignored.
+        "hamp:core" => {}
+
+        // hamp:tele — teleporter extensions beyond the stock pager.
+        // C→S [u8 0x01][i16 page]: request a page of ADMIN teleporters only.
+        // S→C [u8 0x01][i16 page][u8 has_more][u8 count][count × entry]
+        //     entry = [str title][str desc][str tele_str][str zone]
+        //             [i16 cx][i16 cz][i16 tx][i16 tz][str built_by]
+        //     (raw titles — no ★ prefix; the mod renders its own marker)
+        "hamp:tele" => {
+            if let SessionMode::Managed(ref ws) = session.mode {
+                if payload.len() >= 3 && payload[0] == 0x01 {
+                    let page = i16::from_le_bytes([payload[1], payload[2]]).max(0);
+                    let list: Vec<TeleListEntry> = tele_listing(session, ws, "")
+                        .into_iter()
+                        .filter(|e| e.is_admin)
+                        .collect();
+                    let start = (page as usize * 3).min(list.len());
+                    let end = (start + 3).min(list.len());
+                    let mut body = vec![0x01u8];
+                    body.extend_from_slice(&page.to_le_bytes());
+                    body.push((end < list.len()) as u8);
+                    body.push((end - start) as u8);
+                    for e in &list[start..end] {
+                        e.pack_into(&mut body, &e.title);
+                    }
+                    send_mod_channel(session, uid, "hamp:tele", &body);
+                }
+            }
+        }
+        _ => {
+            if session.log_packets {
+                println!("[GAME:'{}'] [MOD] '{}' → unknown channel '{}' ({} bytes) — dropped",
+                    session.room_token, uid, channel, payload.len());
+            }
+        }
+    }
+}
+
+/// Repacks a relay host's 0x2F teleporter page into the format the client
+/// parser expects. The host's PackPageOfTeleporters (this build) emits
+/// [i16 page][u8 has_more] + entries of [u8 1][str×4][i16×4], but the
+/// client's 0x2F case reads [i16 page][u8 is_search][u8 has_more] and an
+/// extra trailing built_by string per entry. `off` points just past the
+/// requester string; `host_name` is used as built_by for every entry.
+fn repack_host_tele_page(data: &[u8], mut off: usize, host_name: &str) -> Option<Vec<u8>> {
+    if off + 3 > data.len() { return None; }
+    let mut pkt = vec![0x2Fu8];
+    pkt.extend_from_slice(&data[off..off + 2]); // page
+    pkt.push(0);                                // is_search (host pages never are)
+    pkt.push(data[off + 2]);                    // has_more
+    off += 3;
+
+    let mut count = 0;
+    while count < 3 && off < data.len() && data[off] == 1 {
+        off += 1;
+        let entry_start = off;
+        for _ in 0..4 { // name, desc, tele_str, zone
+            let (_, next) = unpack_string(data, off);
+            if next == off { return None; }
+            off = next;
+        }
+        if off + 8 > data.len() { return None; } // cx, cz, tx, tz
+        off += 8;
+        pkt.push(1);
+        pkt.extend_from_slice(&data[entry_start..off]);
+        pkt.extend(pack_string(host_name)); // built_by
+        count += 1;
+    }
+    if count < 3 {
+        pkt.push(0);
+    }
+    Some(pkt)
+}
+
 /// Rewrite the `currently_using` string inside a stored OPD blob.
 ///
 /// OPD layout: pos(8) + pos(8) + rot(8) + is_dead(1) = 25-byte fixed header,
@@ -561,7 +844,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 let id_start = NEXT_UNIQUE_ID.fetch_add(INITIAL_ID_BLOCK as i64, Ordering::Relaxed);
                 let _ = write_payload(&mut stream, 2, &SessionInit {
                     daynight_ms:    12000,
-                    client_is_mod:  false,
+                    client_is_mod:  session.is_admin(&uid),
                     max_companions: 3,
                     pvp_enabled:    session.pvp_enabled,
                     uid_start:      id_start,
@@ -577,6 +860,24 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
                 // 6. S→C 0x07: join notification (broadcast to others)
                 session.broadcast(&JoinNotif { username: &uid, joined: true }, Some(uid.as_str()));
+
+                // Relay: give the client MOD_CHECK_GRACE_SECS to declare its
+                // mods (0xE0), then verify against the host's mod set. Vanilla
+                // clients never send MOD_HELLO, so this timer is what catches
+                // them joining a modded world.
+                if matches!(session.mode, SessionMode::Relay) {
+                    let sess = Arc::clone(&session);
+                    let user = uid.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(MOD_CHECK_GRACE_SECS));
+                        if !sess.players.lock().unwrap().contains_key(&user) {
+                            return; // already gone
+                        }
+                        if let Some(reason) = relay_mod_mismatch(&sess, &user) {
+                            kick_player(&sess, &user, &reason);
+                        }
+                    });
+                }
             }
 
             // ── PLAYER_DATA (0x03) ─────────────────────────────────────────
@@ -800,20 +1101,19 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             SessionMode::Managed(ref world) => {
                                 let wire = world.get_chunk_wire(&zone_name, x, z);
                                 let _ = write_payload(&mut stream, 2, &wire);
-                                // Replay any stored teleporter edits for this chunk.
-                                let chunks = world.chunks.read().unwrap();
-                                if let Some(chunk) = chunks.get(&zone_name).and_then(|m| m.get(&(x, z))) {
-                                    for ((tx, tz), (title, desc)) in &chunk.tele_data {
-                                        let mut pkt = vec![0x33u8];
-                                        pkt.extend(pack_string(title));
-                                        pkt.extend(pack_string(desc));
-                                        pkt.extend(pack_string(&zone_name));
-                                        pkt.extend_from_slice(&x.to_le_bytes());
-                                        pkt.extend_from_slice(&z.to_le_bytes());
-                                        pkt.extend_from_slice(&(*tx as i16).to_le_bytes());
-                                        pkt.extend_from_slice(&(*tz as i16).to_le_bytes());
-                                        let _ = write_payload(&mut stream, 2, &pkt);
-                                    }
+                                // Replay teleporter titles for this chunk so the
+                                // builder's local copy stays in sync with edits.
+                                let teles = world.teleporters.read().unwrap();
+                                for t in teles.iter().filter(|t| t.is_listed() && t.zone == zone_name && t.cx == x && t.cz == z) {
+                                    let mut pkt = vec![0x33u8];
+                                    pkt.extend(pack_string(&t.title));
+                                    pkt.extend(pack_string(&t.description));
+                                    pkt.extend(pack_string(&t.zone));
+                                    pkt.extend_from_slice(&t.cx.to_le_bytes());
+                                    pkt.extend_from_slice(&t.cz.to_le_bytes());
+                                    pkt.extend_from_slice(&t.tx.to_le_bytes());
+                                    pkt.extend_from_slice(&t.tz.to_le_bytes());
+                                    let _ = write_payload(&mut stream, 2, &pkt);
                                 }
                             }
                             SessionMode::Relay => {
@@ -1373,7 +1673,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                             elements: params.elements.into_iter()
                                                 .map(|p| ChunkElement { cell_x: p.cell_x, cell_z: p.cell_z, rotation: p.rotation, item_data: p.item_data })
                                                 .collect(),
-                                            land_claims: HashMap::new(), tele_data: HashMap::new(),
+                                            land_claims: HashMap::new(),
                                         }
                                     });
                                     chunk.elements.push(ChunkElement {
@@ -1459,6 +1759,10 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                         }
                                     }
                                 }
+                                // Removing a teleporter object drops its listing too.
+                                if parse_item_id(&item_bytes).as_deref() == Some("Teleporter") {
+                                    ws.remove_teleporter(&zone_str, cx, cz, tx, tz);
+                                }
                             }
                         }
                     } else {
@@ -1518,7 +1822,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                                                 elements: params.elements.into_iter()
                                                     .map(|p| ChunkElement { cell_x: p.cell_x, cell_z: p.cell_z, rotation: p.rotation, item_data: p.item_data })
                                                     .collect(),
-                                                land_claims: HashMap::new(), tele_data: HashMap::new(),
+                                                land_claims: HashMap::new(),
                                             }
                                         });
                                         let tx8 = tx as u8;
@@ -1740,38 +2044,77 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 }
             }
 
-            // ── Teleporter packets — relay to host ──────────────────────
-            // These are processed by the host client which owns teleporter
-            // data. The host responds with S→C packets directly.
+            // ── Teleporter packets ───────────────────────────────────────
+            // Identity is the teleporter object's own location:
+            // tele_str = "zone,cx,cz,tx,tz" (the client keys its screenshot
+            // cache and slot matching on this exact string).
             //
-            // 0x2E REQ_TELE_PAGE: guest asks for a page of teleporters
-            // 0x2F TELE_PAGE_DATA: host sends page back (needs routing)
-            // 0x30 TELE_SCREENSHOT_UPLOAD: screenshot data for a teleporter
-            // 0x31 REQ_TELE_SCREENSHOT: guest asks for a screenshot
-            // 0x32 TELE_SCREENSHOT_RESPONSE: host sends screenshot back
-            // 0x33 FINISHED_EDITING_TELE: notify others of edit
-            // 0x34 NEW_TELE_SEARCH: search request → relay to host
-            0x2E | 0x31 | 0x34 => {
-                // Guest→host: relay with requester name so host can respond
+            // Managed mode: the server is the teleporter authority. The
+            // host-side serving code left in this client build is wire-broken
+            // (PackPageOfTeleporters omits the is_search byte and built_by
+            // string that the client's own 0x2F parser requires), so serving
+            // from the server is the only path that works at all.
+            //
+            // Relay mode: requests still go to the host, but both directions
+            // are repacked into the format the client actually parses.
+
+            // 0x2E REQ_TELE_PAGE
+            // C→S mode 0: [u8 0][u8 in_search][i16 page]
+            // C→S mode 1: [u8 1][str zone][i16 cx][i16 cz][i16 tx][i16 tz]
+            //             ("what page is the teleporter at this location on")
+            0x2E => {
                 if let Some(ref uid) = player_id {
-                    if matches!(session.mode, SessionMode::Relay) {
-                        let host = session.host.lock().unwrap().clone();
-                        if let Some(ref hname) = host {
-                            let is_host = hname == uid;
-                            if !is_host {
-                                let mut relay = vec![pid];
-                                relay.extend(pack_string(uid));
-                                relay.extend_from_slice(&data[10..]);
-                                session.send_to(hname, &relay);
+                    match session.mode {
+                        SessionMode::Managed(ref ws) => {
+                            if data.len() >= 14 && data[10] == 0 {
+                                let in_search = data[11] == 1;
+                                let page = i16::from_le_bytes([data[12], data[13]]);
+                                send_tele_page(&session, ws, uid, page, in_search);
+                            } else if data.len() > 11 && data[10] == 1 {
+                                let (zone, off) = unpack_string(data, 11);
+                                if data.len() >= off + 8 && !zone.is_empty() {
+                                    let cx = i16::from_le_bytes([data[off],   data[off+1]]);
+                                    let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
+                                    let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
+                                    let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
+                                    let key = format!("{},{},{},{},{}", zone, cx, cz, tx, tz);
+                                    let page = tele_listing(&session, ws, "")
+                                        .iter()
+                                        .position(|e| e.tele_str == key)
+                                        .map(|i| (i / 3) as i16)
+                                        .unwrap_or(0);
+                                    send_tele_page(&session, ws, uid, page, false);
+                                }
+                            }
+                        }
+                        SessionMode::Relay => {
+                            // Host parses [requester][mode][...] with NO
+                            // in_search byte — strip it from mode-0 requests
+                            // or the host reads garbage for the page number.
+                            let host = session.host.lock().unwrap().clone();
+                            if let Some(ref hname) = host {
+                                if hname != uid && data.len() > 10 {
+                                    let mut relay = vec![0x2Eu8];
+                                    relay.extend(pack_string(uid));
+                                    if data[10] == 0 && data.len() >= 14 {
+                                        relay.push(0);
+                                        relay.extend_from_slice(&data[12..14]);
+                                    } else {
+                                        relay.extend_from_slice(&data[10..]);
+                                    }
+                                    session.send_to(hname, &relay);
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // 0x2F TELE_PAGE_DATA — host→guest point-to-point
-            // C→S: [str user_requesting][i16 page][u8 has_more][u8 count][tele data...]
-            // Route the response to the named user.
+            // 0x2F TELE_PAGE_DATA — host's page reply (relay mode only).
+            // Host packs: [str requester][i16 page][u8 has_more]
+            //             entries [u8 1][str×4][i16×4], [u8 0] terminator.
+            // Repack into the parser's format while routing to the requester
+            // (see repack_host_tele_page).
             0x2F => {
                 if let Some(ref uid) = player_id {
                     let is_host = session.host.lock().unwrap()
@@ -1779,55 +2122,114 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                     if is_host {
                         let (target_user, off) = unpack_string(data, 10);
                         if !target_user.is_empty() {
-                            // S→C 0x2F: [i16 page][u8 has_more][u8 count][tele data...]
-                            let mut pkt = vec![0x2Fu8];
-                            pkt.extend_from_slice(&data[off..]);
-                            session.send_to(&target_user, &pkt);
-                        }
-                    } else {
-                        // Non-host sending 0x2F — relay to host
-                        let host = session.host.lock().unwrap().clone();
-                        if let Some(ref hname) = host {
-                            let mut relay = vec![0x2Fu8];
-                            relay.extend(pack_string(uid));
-                            relay.extend_from_slice(&data[10..]);
-                            session.send_to(hname, &relay);
+                            if let Some(pkt) = repack_host_tele_page(data, off, uid) {
+                                session.send_to(&target_user, &pkt);
+                            }
                         }
                     }
                 }
             }
 
-            // 0x30 TELE_SCREENSHOT_UPLOAD — broadcast to all (screenshot cache)
+            // 0x30 TELE_SCREENSHOT upload
+            // C→S: [str zone][i16 cx][i16 cz][i16 tx][i16 tz][i32 len][bytes]
+            // Managed: store so the server can answer 0x31 itself. Both
+            // modes: broadcast unchanged (S→C 0x30 has the same layout) so
+            // clients tracking the teleporter locally refresh their copy.
             0x30 => {
                 if let Some(ref uid) = player_id {
+                    if let SessionMode::Managed(ref ws) = session.mode {
+                        let (zone, off) = unpack_string(data, 10);
+                        if data.len() >= off + 12 && !zone.is_empty() {
+                            let cx = i16::from_le_bytes([data[off],   data[off+1]]);
+                            let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
+                            let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
+                            let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
+                            let len = i32::from_le_bytes([data[off+8], data[off+9], data[off+10], data[off+11]]).max(0) as usize;
+                            let start = off + 12;
+                            if data.len() >= start + len {
+                                ws.set_teleporter_screenshot(&zone, cx, cz, tx, tz,
+                                    data[start..start + len].to_vec(), uid);
+                            }
+                        }
+                    }
                     let mut pkt = vec![0x30u8];
                     pkt.extend_from_slice(&data[10..]);
                     session.broadcast(&pkt, Some(uid.as_str()));
                 }
             }
 
-            // 0x32 TELE_SCREENSHOT_RESPONSE — host→guest point-to-point
-            // Host sends: [str requester][str tele_id][i32 size][bytes...]
+            // 0x31 REQ_TELE_SCREENSHOT
+            // C→S: [str zone][i16 cx][i16 cz][i16 tx][i16 tz]
+            // Managed: answer with S→C 0x32 [str tele_str][i32 len][bytes].
+            // No reply if we have no screenshot — the client keeps its
+            // placeholder sprite.
+            0x31 => {
+                if let Some(ref uid) = player_id {
+                    match session.mode {
+                        SessionMode::Managed(ref ws) => {
+                            let (zone, off) = unpack_string(data, 10);
+                            if data.len() >= off + 8 && !zone.is_empty() {
+                                let cx = i16::from_le_bytes([data[off],   data[off+1]]);
+                                let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
+                                let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
+                                let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
+                                let teles = ws.teleporters.read().unwrap();
+                                if let Some(t) = teles.iter().find(|t| t.is_at(&zone, cx, cz, tx, tz)) {
+                                    if !t.screenshot.is_empty() {
+                                        let mut pkt = vec![0x32u8];
+                                        pkt.extend(pack_string(&t.tele_str()));
+                                        pkt.extend_from_slice(&(t.screenshot.len() as i32).to_le_bytes());
+                                        pkt.extend_from_slice(&t.screenshot);
+                                        session.send_to(uid, &pkt);
+                                    }
+                                }
+                            }
+                        }
+                        SessionMode::Relay => {
+                            let host = session.host.lock().unwrap().clone();
+                            if let Some(ref hname) = host {
+                                if hname != uid {
+                                    let mut relay = vec![0x31u8];
+                                    relay.extend(pack_string(uid));
+                                    relay.extend_from_slice(&data[10..]);
+                                    session.send_to(hname, &relay);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 0x32 TELE_SCREENSHOT_RESPONSE — host's screenshot reply (relay).
+            // Host packs: [str requester][str zone][i16×4][i32 len][bytes];
+            // the client parses [str tele_str][i32 len][bytes], so rebuild
+            // the location fields into the tele_str key while routing.
             0x32 => {
                 if let Some(ref uid) = player_id {
                     let is_host = session.host.lock().unwrap()
                         .as_ref().map(|h| h == uid).unwrap_or(false);
                     if is_host {
                         let (target_user, off) = unpack_string(data, 10);
-                        if !target_user.is_empty() {
+                        let (zone, coords) = unpack_string(data, off);
+                        if !target_user.is_empty() && data.len() >= coords + 8 {
+                            let cx = i16::from_le_bytes([data[coords],   data[coords+1]]);
+                            let cz = i16::from_le_bytes([data[coords+2], data[coords+3]]);
+                            let tx = i16::from_le_bytes([data[coords+4], data[coords+5]]);
+                            let tz = i16::from_le_bytes([data[coords+6], data[coords+7]]);
                             let mut pkt = vec![0x32u8];
-                            pkt.extend_from_slice(&data[off..]);
+                            pkt.extend(pack_string(&format!("{},{},{},{},{}", zone, cx, cz, tx, tz)));
+                            pkt.extend_from_slice(&data[coords + 8..]); // [i32 len][bytes]
                             session.send_to(&target_user, &pkt);
                         }
                     }
                 }
             }
 
-            // 0x33 FINISHED_EDITING_TELE — broadcast to all + persist edit
+            // 0x33 FINISHED_EDITING_TELE — broadcast to all + upsert registry
             // C→S: [title:str][description:str][zone:str][cx:i16][cz:i16][tx:i16][tz:i16]
             // (confirmed from SendFinishedEditingTeleporter decompilation)
             0x33 => {
-                if player_id.is_some() {
+                if let Some(ref uid) = player_id {
                     let mut pkt = vec![0x33u8];
                     pkt.extend_from_slice(&data[10..]);
                     session.broadcast(&pkt, None);
@@ -1837,14 +2239,41 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         let (title, next) = unpack_string(data, off); off = next;
                         let (desc,  next) = unpack_string(data, off); off = next;
                         let (zone,  next) = unpack_string(data, off); off = next;
-                        if off + 8 <= data.len() {
+                        if off + 8 <= data.len() && !zone.is_empty() {
                             let cx = i16::from_le_bytes([data[off],   data[off+1]]);
                             let cz = i16::from_le_bytes([data[off+2], data[off+3]]);
                             let tx = i16::from_le_bytes([data[off+4], data[off+5]]);
                             let tz = i16::from_le_bytes([data[off+6], data[off+7]]);
-                            let mut chunks = ws.chunks.write().unwrap();
-                            if let Some(chunk) = chunks.get_mut(&zone).and_then(|m| m.get_mut(&(cx, cz))) {
-                                chunk.tele_data.insert((tx as u8, tz as u8), (title, desc));
+                            ws.upsert_teleporter(&zone, cx, cz, tx, tz, &title, &desc, uid);
+                        }
+                    }
+                }
+            }
+
+            // 0x34 NEW_TELE_SEARCH — C→S: [str term]
+            // Managed: remember the term and reply immediately with page 0 of
+            // matching results (0x2F with is_search=1); the client pages
+            // further via 0x2E with in_search=1. Mirrors the original
+            // server's tele_search_NEW behaviour.
+            0x34 => {
+                if let Some(ref uid) = player_id {
+                    match session.mode {
+                        SessionMode::Managed(ref ws) => {
+                            let (term, _) = unpack_string(data, 10);
+                            session.tele_search.lock().unwrap().insert(uid.clone(), term);
+                            send_tele_page(&session, ws, uid, 0, true);
+                        }
+                        SessionMode::Relay => {
+                            // This client build has no host-side 0x34 handler;
+                            // relay anyway in case an older host can serve it.
+                            let host = session.host.lock().unwrap().clone();
+                            if let Some(ref hname) = host {
+                                if hname != uid {
+                                    let mut relay = vec![0x34u8];
+                                    relay.extend(pack_string(uid));
+                                    relay.extend_from_slice(&data[10..]);
+                                    session.send_to(hname, &relay);
+                                }
                             }
                         }
                     }
@@ -2051,6 +2480,81 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 }
             }
 
+            // ── MOD_HELLO (0xE0) — HAModHelper handshake ─────────────────
+            // C→S: [i16 protocol][str helper_version][i16 n_mods][n × str mod_id]
+            // S→C reply MOD_WELCOME (same opcode):
+            //      [i16 protocol][str server_ident][i16 n_channels][n × str channel]
+            // Must be sent after login; marks the player as modded so the
+            // server will send/accept MOD_CHANNEL traffic for them.
+            0xE0 => {
+                if let Some(ref uid) = player_id {
+                    if data.len() >= 12 {
+                        let protocol = i16::from_le_bytes([data[10], data[11]]);
+                        let (helper_version, mut off) = unpack_string(data, 12);
+                        let mut mods = Vec::new();
+                        if off + 2 <= data.len() {
+                            let n = i16::from_le_bytes([data[off], data[off+1]]).max(0);
+                            off += 2;
+                            for _ in 0..n {
+                                let (m, next) = unpack_string(data, off);
+                                if next == off { break; }
+                                off = next;
+                                mods.push(m);
+                            }
+                        }
+                        println!("[GAME:'{}'] '{}' is modded: HAModHelper {} (proto {}, {} mod(s))",
+                            session.room_token, uid, helper_version, protocol, mods.len());
+                        session.mod_clients.lock().unwrap()
+                            .insert(uid.clone(), ModClientInfo { protocol, helper_version, mods });
+
+                        let mut pkt = vec![0xE0u8];
+                        pkt.extend_from_slice(&MOD_PROTOCOL_VERSION.to_le_bytes());
+                        pkt.extend(pack_string(concat!("HAMP ", env!("CARGO_PKG_VERSION"))));
+                        pkt.extend_from_slice(&(MOD_CHANNELS.len() as i16).to_le_bytes());
+                        for ch in MOD_CHANNELS {
+                            pkt.extend(pack_string(ch));
+                        }
+                        session.send_to(uid, &pkt);
+
+                        // Relay mode: enforce mod-set matching against the host.
+                        if matches!(session.mode, SessionMode::Relay) {
+                            let is_host = session.host.lock().unwrap().as_deref() == Some(uid.as_str());
+                            if is_host {
+                                // Host declared (possibly late) — re-validate
+                                // every guest already in the session.
+                                let guests: Vec<String> = session.players.lock().unwrap().keys()
+                                    .filter(|n| n.as_str() != uid.as_str())
+                                    .cloned()
+                                    .collect();
+                                for g in guests {
+                                    if let Some(reason) = relay_mod_mismatch(&session, &g) {
+                                        kick_player(&session, &g, &reason);
+                                    }
+                                }
+                            } else if let Some(reason) = relay_mod_mismatch(&session, uid) {
+                                kick_player(&session, uid, &reason);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── MOD_CHANNEL (0xE1) — namespaced mod message ──────────────
+            // C→S / S→C: [str channel][payload...]   (channel = "namespace:name")
+            // Only accepted from players that completed MOD_HELLO; never
+            // relayed or broadcast, so stock clients see none of this.
+            0xE1 => {
+                if let Some(ref uid) = player_id {
+                    let known = session.mod_clients.lock().unwrap().contains_key(uid.as_str());
+                    if known {
+                        let (channel, off) = unpack_string(data, 10);
+                        if !channel.is_empty() {
+                            handle_mod_channel(&session, uid, &channel, &data[off.min(data.len())..]);
+                        }
+                    }
+                }
+            }
+
             // ── Unknown — relay with player prefix ────────────────────────
             _ => {
                 if let Some(ref uid) = player_id {
@@ -2077,6 +2581,8 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             .unwrap_or_default();
         session.players.lock().unwrap().remove(uid.as_str());
         session.open_baskets.lock().unwrap().retain(|_, (holder, _)| holder != uid);
+        session.mod_clients.lock().unwrap().remove(uid.as_str());
+        session.tele_search.lock().unwrap().remove(uid.as_str());
         session.broadcast_zone(
             &ReleaseInteractingObject { player: uid },
             &player_zone, Some(uid.as_str()));
@@ -2224,7 +2730,7 @@ pub fn run(cfg: &Config) {
     }
 
     LOG_PACKETS.store(cfg.log_packets, std::sync::atomic::Ordering::Relaxed);
-    let session = Session::new(&cfg.server_name, SessionMode::Managed(Arc::clone(&world)), cfg.pvp_enabled, cfg.log_packets);
+    let session = Session::new(&cfg.server_name, SessionMode::Managed(Arc::clone(&world)), cfg.pvp_enabled, cfg.log_packets, cfg.admin_users.clone());
 
     let mut registry_handle: Option<registry_client::RegistryHandle> = None;
 
@@ -2292,7 +2798,7 @@ pub fn spawn_relay_session(room_token: String, cfg: &Config) -> Option<u16> {
     for port in cfg.game_port..=cfg.game_port_max {
         let addr = format!("{}:{}", cfg.host, port);
         if let Ok(listener) = TcpListener::bind(&addr) {
-            let session = Session::new(room_token.clone(), SessionMode::Relay, false, true);
+            let session = Session::new(room_token.clone(), SessionMode::Relay, false, true, Vec::new());
             *session.listen_addr.lock().unwrap() = listener.local_addr().ok();
             let accept_session = Arc::clone(&session);
             println!("[GAME] Relay session '{}' → port {}", room_token, port);
@@ -2321,3 +2827,67 @@ pub fn spawn_relay_session(room_token: String, cfg: &Config) -> Option<u16> {
     None
 }
 
+
+#[cfg(test)]
+mod tele_tests {
+    use super::*;
+
+    /// Builds a fake C→S 0x2F frame as the relay host's PackPageOfTeleporters
+    /// emits it: 10-byte frame header, requester string, [i16 page][u8 has_more],
+    /// then entries of [u8 1][str×4][i16×4] and a [u8 0] terminator.
+    fn host_page_frame(entries: usize) -> (Vec<u8>, usize) {
+        let mut data = vec![0u8; 10];
+        data.extend(pack_string("guest"));
+        let off = data.len();
+        data.extend_from_slice(&2i16.to_le_bytes()); // page
+        data.push(1);                                // has_more
+        for i in 0..entries {
+            data.push(1);
+            data.extend(pack_string(&format!("Tele {i}")));
+            data.extend(pack_string("desc"));
+            data.extend(pack_string("overworld,1,2,3,4"));
+            data.extend(pack_string("overworld"));
+            for v in [1i16, 2, 3, 4] {
+                data.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        if entries < 3 {
+            data.push(0);
+        }
+        (data, off)
+    }
+
+    #[test]
+    fn repack_inserts_is_search_and_built_by() {
+        let (data, off) = host_page_frame(1);
+        let pkt = repack_host_tele_page(&data, off, "hostname").unwrap();
+
+        assert_eq!(pkt[0], 0x2F);
+        assert_eq!(i16::from_le_bytes([pkt[1], pkt[2]]), 2); // page preserved
+        assert_eq!(pkt[3], 0);                               // is_search inserted
+        assert_eq!(pkt[4], 1);                               // has_more preserved
+        assert_eq!(pkt[5], 1);                               // entry flag
+
+        // built_by sits between the entry body and the terminator.
+        assert_eq!(*pkt.last().unwrap(), 0);
+        let bb = pack_string("hostname");
+        let bb_start = pkt.len() - 1 - bb.len();
+        assert_eq!(&pkt[bb_start..pkt.len() - 1], &bb[..]);
+    }
+
+    #[test]
+    fn repack_full_page_has_no_terminator() {
+        let (data, off) = host_page_frame(3);
+        let pkt = repack_host_tele_page(&data, off, "h").unwrap();
+        // Three entries, each ending in built_by; no trailing 0 after the third.
+        let bb = pack_string("h");
+        assert_eq!(&pkt[pkt.len() - bb.len()..], &bb[..]);
+    }
+
+    #[test]
+    fn repack_rejects_truncated_entry() {
+        let (mut data, off) = host_page_frame(1);
+        data.truncate(data.len() - 6); // cut into the coord block
+        assert!(repack_host_tele_page(&data, off, "h").is_none());
+    }
+}

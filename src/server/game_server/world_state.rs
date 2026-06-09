@@ -97,6 +97,46 @@ impl LandClaim {
     }
 }
 
+// ── Teleporter ────────────────────────────────────────────────────────────
+
+/// A player-built teleporter in a managed world, identified by the location
+/// of the teleporter object itself: (zone, chunk_x, chunk_z, inner_x, inner_z).
+///
+/// Created/updated by C→S 0x33 (finished editing) and 0x30 (screenshot
+/// upload); served to clients as S→C 0x2F pages and 0x32 screenshots.
+/// Entries with an empty `title` exist only to hold an early screenshot
+/// upload and are not listed until a 0x33 arrives.
+pub struct Teleporter {
+    pub title: String,
+    pub description: String,
+    pub zone: String,
+    pub cx: i16,
+    pub cz: i16,
+    pub tx: i16,
+    pub tz: i16,
+    /// Username of the player who set the teleporter up.
+    pub built_by: String,
+    /// Screenshot image bytes uploaded by the builder (empty until received).
+    pub screenshot: Vec<u8>,
+}
+
+impl Teleporter {
+    /// Identity string the client uses to key its screenshot cache:
+    /// "zone,cx,cz,tx,tz" (same concat PackPageOfTeleporters builds).
+    pub fn tele_str(&self) -> String {
+        format!("{},{},{},{},{}", self.zone, self.cx, self.cz, self.tx, self.tz)
+    }
+
+    pub fn is_at(&self, zone: &str, cx: i16, cz: i16, tx: i16, tz: i16) -> bool {
+        self.cx == cx && self.cz == cz && self.tx == tx && self.tz == tz && self.zone == zone
+    }
+
+    /// Whether this entry should appear in teleporter list pages.
+    pub fn is_listed(&self) -> bool {
+        !self.title.is_empty()
+    }
+}
+
 // ── Chunk element (placed object) ─────────────────────────────────────────
 
 /// A single placed object within a chunk cell.
@@ -125,9 +165,6 @@ pub struct Chunk {
     pub mob_b: String,
     pub elements: Vec<ChunkElement>,
     pub land_claims: HashMap<String, LandClaim>,
-    /// Teleporter edits: (cell_x, cell_z) → (title, description).
-    /// Replayed as 0x33 packets when the chunk is loaded by a new player.
-    pub tele_data: HashMap<(u8, u8), (String, String)>,
 }
 
 impl Chunk {
@@ -144,7 +181,7 @@ impl Chunk {
             mob_a: String::new(),
             mob_b: String::new(),
             elements: Vec::new(),
-            land_claims: HashMap::new(), tele_data: HashMap::new(),
+            land_claims: HashMap::new(),
         }
     }
 
@@ -285,6 +322,8 @@ pub struct WorldState {
     /// All known zones keyed by name. Pre-populated from the template; extended at runtime
     /// by BUILD (interior items) and plugins (custom zones).
     pub zones: RwLock<HashMap<String, ZoneEntry>>,
+    /// All player-built teleporters, in creation order (page N = entries 3N..3N+3).
+    pub teleporters: RwLock<Vec<Teleporter>>,
     pub(crate) generator: WorldGenerator,
 }
 
@@ -315,7 +354,7 @@ impl WorldState {
                     mob_a:       params.mob_a,
                     mob_b:       params.mob_b,
                     elements:    params.elements.into_iter().map(placed_to_element).collect(),
-                    land_claims: HashMap::new(), tele_data: HashMap::new(),
+                    land_claims: HashMap::new(),
                 });
             }
         }
@@ -335,6 +374,7 @@ impl WorldState {
             players: RwLock::new(HashMap::new()),
             baskets: BasketStore::new(),
             zones: RwLock::new(zone_map),
+            teleporters: RwLock::new(Vec::new()),
             generator,
         }
     }
@@ -384,7 +424,7 @@ impl WorldState {
                 mob_a:       params.mob_a,
                 mob_b:       params.mob_b,
                 elements:    params.elements.into_iter().map(placed_to_element).collect(),
-                land_claims: HashMap::new(), tele_data: HashMap::new(),
+                land_claims: HashMap::new(),
             };
             let wire = chunk.to_wire();
             self.chunks.write().unwrap()
@@ -410,7 +450,7 @@ impl WorldState {
             mob_a:       params.mob_a,
             mob_b:       params.mob_b,
             elements:    params.elements.into_iter().map(placed_to_element).collect(),
-            land_claims: HashMap::new(), tele_data: HashMap::new(),
+            land_claims: HashMap::new(),
         };
         let wire = chunk.to_wire();
         self.chunks.write().unwrap()
@@ -440,7 +480,7 @@ impl WorldState {
                                 floor_tex: p.floor_tex, floor_model: 0,
                                 mob_a: p.mob_a, mob_b: p.mob_b,
                                 elements: p.elements.into_iter().map(placed_to_element).collect(),
-                                land_claims: HashMap::new(), tele_data: HashMap::new(),
+                                land_claims: HashMap::new(),
                             }
                         } else {
                             Chunk::blank(cx, cz, zone)
@@ -449,6 +489,48 @@ impl WorldState {
                 chunk.land_claims.insert(claim_key.clone(), LandClaim::new(claim_key.clone(), owner.to_string(), days));
             }
         }
+    }
+
+    /// Creates or updates the teleporter at the given location (C→S 0x33).
+    /// `editor` becomes `built_by` only on first creation.
+    pub fn upsert_teleporter(&self, zone: &str, cx: i16, cz: i16, tx: i16, tz: i16, title: &str, desc: &str, editor: &str) {
+        let mut teles = self.teleporters.write().unwrap();
+        if let Some(t) = teles.iter_mut().find(|t| t.is_at(zone, cx, cz, tx, tz)) {
+            t.title = title.to_string();
+            t.description = desc.to_string();
+        } else {
+            teles.push(Teleporter {
+                title: title.to_string(),
+                description: desc.to_string(),
+                zone: zone.to_string(),
+                cx, cz, tx, tz,
+                built_by: editor.to_string(),
+                screenshot: Vec::new(),
+            });
+        }
+    }
+
+    /// Stores a screenshot for the teleporter at the given location (C→S 0x30).
+    /// Creates an unlisted placeholder if the upload arrives before the 0x33 edit.
+    pub fn set_teleporter_screenshot(&self, zone: &str, cx: i16, cz: i16, tx: i16, tz: i16, shot: Vec<u8>, uploader: &str) {
+        let mut teles = self.teleporters.write().unwrap();
+        if let Some(t) = teles.iter_mut().find(|t| t.is_at(zone, cx, cz, tx, tz)) {
+            t.screenshot = shot;
+        } else {
+            teles.push(Teleporter {
+                title: String::new(),
+                description: String::new(),
+                zone: zone.to_string(),
+                cx, cz, tx, tz,
+                built_by: uploader.to_string(),
+                screenshot: shot,
+            });
+        }
+    }
+
+    /// Removes the teleporter at the given location (its object was removed).
+    pub fn remove_teleporter(&self, zone: &str, cx: i16, cz: i16, tx: i16, tz: i16) {
+        self.teleporters.write().unwrap().retain(|t| !t.is_at(zone, cx, cz, tx, tz));
     }
 
     /// Updates a single user slot on the claim at (chunk_x, chunk_z, inner_x, inner_z).
