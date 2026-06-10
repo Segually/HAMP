@@ -265,7 +265,7 @@ pub fn handle_packet(
             );
             let mut resp = vec![0xE0u8];
             resp.extend_from_slice(&1i16.to_le_bytes()); // mod protocol version
-            resp.extend_from_slice(&pack_string(concat!("HAMP ", env!("CARGO_PKG_VERSION"))));
+            resp.extend_from_slice(&pack_string(concat!("HAMP v", env!("CARGO_PKG_VERSION"))));
             resp.extend_from_slice(&0i16.to_le_bytes()); // no channels on the friend server
             conn.send(2, &resp, "S->C [MOD_WELCOME]");
         }

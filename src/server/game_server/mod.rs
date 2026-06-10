@@ -599,12 +599,6 @@ fn relay_mod_mismatch(session: &Session, uid: &str) -> Option<String> {
 /// thread runs the normal disconnect cleanup.
 fn kick_player(session: &Session, uid: &str, reason: &str) {
     println!("[GAME:'{}'] Kicking '{}': {}", session.room_token, uid, reason);
-    session.send_to(uid, &ChatBroadcast {
-        player_id:    "",
-        display_name: "[Server]",
-        message:      reason,
-        chat_type:    0,
-    });
     let mut body = vec![0x01u8]; // hamp:core 0x01 = kick notice
     body.extend(pack_string(reason));
     send_mod_channel(session, uid, "hamp:core", &body);
@@ -615,7 +609,7 @@ fn kick_player(session: &Session, uid: &str, reason: &str) {
     // never sees the hamp:core notice and the stock "Lost connection to Host"
     // screen is shown instead of our reason. Half a second is well inside the
     // client's frame loop and imperceptible for a kick.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
     if let Some(p) = session.players.lock().unwrap().get(uid) {
         // Half-close (send FIN after the queued notices) rather than a full
