@@ -26,6 +26,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -48,6 +49,9 @@ pub struct RegisteredServer {
     pub room_token:  String,
     pub n_online:    i16,
     pub icon_bytes:  Option<Vec<u8>>,
+    /// Connection that owns this entry — a reconnecting server replaces the
+    /// entry, and the old (dead) connection's cleanup must not remove it.
+    pub conn_id:     u64,
 }
 
 impl RegisteredServer {
@@ -97,11 +101,12 @@ fn read_str(s: &mut TcpStream) -> Option<String> {
 // ── Per-connection handler ─────────────────────────────────────────────────
 
 fn handle_connection(
-    stream: &mut TcpStream,
-    addr:   std::net::SocketAddr,
-    secret: &str,
-    list:   &Arc<RwLock<Vec<RegisteredServer>>>,
-    state:  &Arc<SharedState>,
+    stream:  &mut TcpStream,
+    addr:    std::net::SocketAddr,
+    secret:  &str,
+    list:    &Arc<RwLock<Vec<RegisteredServer>>>,
+    state:   &Arc<SharedState>,
+    conn_id: u64,
 ) -> Option<String> {
     // ── Auth ──────────────────────────────────────────────────────────────
     if read_u8(stream)? != 0x01 {
@@ -141,12 +146,21 @@ fn handle_connection(
         room_token,
         n_online:   0,
         icon_bytes: None,
+        conn_id,
     };
 
-    list.write().unwrap().push(server);
+    {
+        // A reconnecting server replaces its stale entry (the old connection
+        // may not have noticed the disconnect yet).
+        let mut servers = list.write().unwrap();
+        servers.retain(|s| s.name != name);
+        servers.push(server);
+    }
     println!("[REGISTRY] '{}' registered (max {} players, port {})", name, max_players, port);
 
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
+    // The game server heartbeats every 15 s; 60 s of silence = dead link.
+    // (Keep generous margin — a timed-out read here is treated as disconnect.)
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
 
     // ── Message loop ──────────────────────────────────────────────────────
     loop {
@@ -162,7 +176,7 @@ fn handle_connection(
                     None    => break,
                 };
                 let mut servers = list.write().unwrap();
-                if let Some(s) = servers.iter_mut().find(|s| s.name == name) {
+                if let Some(s) = servers.iter_mut().find(|s| s.conn_id == conn_id) {
                     s.n_online = n;
                 }
             }
@@ -233,6 +247,7 @@ pub fn run(cfg: &Config, list: Arc<RwLock<Vec<RegisteredServer>>>, state: Arc<Sh
 
     let secret = cfg.registry_secret.clone();
     std::thread::spawn(move || {
+        let next_conn_id = AtomicU64::new(1);
         for incoming in listener.incoming() {
             let stream = match incoming {
                 Ok(s)  => s,
@@ -240,15 +255,24 @@ pub fn run(cfg: &Config, list: Arc<RwLock<Vec<RegisteredServer>>>, state: Arc<Sh
             };
             let peer = stream.peer_addr()
                 .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
-            let list   = Arc::clone(&list);
-            let secret = secret.clone();
-            let state  = Arc::clone(&state);
+            let list    = Arc::clone(&list);
+            let secret  = secret.clone();
+            let state   = Arc::clone(&state);
+            let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
             std::thread::spawn(move || {
                 let mut stream = stream;
-                let name = handle_connection(&mut stream, peer, &secret, &list, &state);
+                let name = handle_connection(&mut stream, peer, &secret, &list, &state, conn_id);
                 if let Some(ref n) = name {
-                    list.write().unwrap().retain(|s| s.name != *n);
-                    println!("[REGISTRY] '{}' disconnected — removed from server list", n);
+                    // Remove only the entry this connection owns — if the
+                    // server already reconnected, its fresh entry stays.
+                    let mut servers = list.write().unwrap();
+                    let before = servers.len();
+                    servers.retain(|s| s.conn_id != conn_id);
+                    if servers.len() != before {
+                        println!("[REGISTRY] '{}' disconnected — removed from server list", n);
+                    } else {
+                        println!("[REGISTRY] '{}' stale connection closed (already re-registered)", n);
+                    }
                 }
             });
         }

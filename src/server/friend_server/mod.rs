@@ -252,6 +252,24 @@ pub fn handle_packet(
             conn.send_pkt(&HeartbeatReply, "S->C [HB]");
         }
 
+        // ── MOD_HELLO (0xE0) ───────────────────────────────────────────────
+        // HAModHelper announces itself; reply with MOD_WELCOME so the client
+        // can show the server build (e.g. on the friends screen). The friend
+        // server defines no mod channels yet, so channel_count is 0. Stock
+        // clients never send this, so they never see the reply.
+        ClientPacket::ModHello { protocol, helper_version, mods } => {
+            println!(
+                "[FRSV] MOD_HELLO from {} (protocol {}, helper {}, {} mod(s))",
+                current_user.as_deref().unwrap_or("<pre-login>"),
+                protocol, helper_version, mods.len()
+            );
+            let mut resp = vec![0xE0u8];
+            resp.extend_from_slice(&1i16.to_le_bytes()); // mod protocol version
+            resp.extend_from_slice(&pack_string(concat!("HAMP ", env!("CARGO_PKG_VERSION"))));
+            resp.extend_from_slice(&0i16.to_le_bytes()); // no channels on the friend server
+            conn.send(2, &resp, "S->C [MOD_WELCOME]");
+        }
+
         // ── ADD FRIEND (0x10) ──────────────────────────────────────────────
         // Sends a friend request. On success, echoes confirmation to the
         // sender and pushes an incoming-request notification to the target
@@ -716,6 +734,8 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
     let mut rd = read_copy;
     let mut current_user:  Option<String> = None;
     let mut last_heartbeat = std::time::Instant::now();
+    // Per-stream fragment reassembly (large packets span several batches).
+    let mut partial = crate::defs::packet::FragmentBuffers::new();
 
     println!("\n[FRIEND] New connection: {}", addr);
 
@@ -746,36 +766,41 @@ fn handle_client(stream: TcpStream, addr: std::net::SocketAddr, state: Arc<Share
             continue;
         }
 
-        // ── Parse all complete packets in this read buffer ─────────────────
-        // Multiple packets can arrive in a single TCP segment; process them
-        // all.  Each has a u16 total_len at bytes [0..2], which tells us
-        // exactly where the next packet starts.
+        // ── Parse all complete batches in this read buffer ─────────────────
+        // Multiple batches can arrive in a single TCP segment, and a single
+        // batch can carry several queue records (or fragments of a large
+        // packet) — split_batch_into handles both and yields re-framed
+        // complete packets.
         let mut pos = 0;
-        while pos + 10 <= n {
+        while pos + 3 <= n {
             let pkt_total = u16::from_le_bytes([data[pos], data[pos + 1]]) as usize;
-            if pkt_total < 10 || pos + pkt_total > n {
-                // Incomplete packet split across reads — stop for now.
+            if pkt_total < 3 || pos + pkt_total > n {
+                // Incomplete batch split across reads — stop for now.
                 break;
             }
-            let pkt = &data[pos..pos + pkt_total];
-
-            let packet = match ClientPacket::parse(pkt) {
-                Some(p) => p,
-                None => {
-                    println!("[FRIEND] Dropped unrecognised packet from {} | {}", addr, to_hex_upper(pkt));
-                    pos += pkt_total;
-                    continue;
-                }
-            };
-
-            // Any valid packet resets the heartbeat deadline.
-            last_heartbeat = std::time::Instant::now();
-
-            println!("\n[C->S] [{}] {}({}) | {}", packet.id().name(),
-                current_user.as_deref().unwrap_or("?"), conn.peer_ip(), to_hex_upper(pkt));
-
-            handle_packet(packet, &conn, &mut current_user, &state, &cfg);
+            let batch = &data[pos..pos + pkt_total];
             pos += pkt_total;
+
+            let mut frames = Vec::new();
+            crate::defs::packet::split_batch_into(batch, &mut partial, &mut frames);
+
+            for pkt in &frames {
+                let packet = match ClientPacket::parse(pkt) {
+                    Some(p) => p,
+                    None => {
+                        println!("[FRIEND] Dropped unrecognised packet from {} | {}", addr, to_hex_upper(pkt));
+                        continue;
+                    }
+                };
+
+                // Any valid packet resets the heartbeat deadline.
+                last_heartbeat = std::time::Instant::now();
+
+                println!("\n[C->S] [{}] {}({}) | {}", packet.id().name(),
+                    current_user.as_deref().unwrap_or("?"), conn.peer_ip(), to_hex_upper(pkt));
+
+                handle_packet(packet, &conn, &mut current_user, &state, &cfg);
+            }
         }
     }
 

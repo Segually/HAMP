@@ -124,6 +124,20 @@ pub enum ClientPacket {
         /// Free-text notes (`"additional_notes"`).
         notes:    String,
     },
+
+    /// `0xE0` — MOD_HELLO from HAModHelper (see docs/protocol/HAMP_MOD_PROTOCOL.md).
+    ///
+    /// The server replies with MOD_WELCOME (same opcode) carrying its ident
+    /// string; modded clients use it to show which server build they're on.
+    /// Stock clients never send this and never receive the reply.
+    ModHello {
+        /// Mod protocol version (currently 1).
+        protocol: i16,
+        /// HAModHelper "version@hash" string.
+        helper_version: String,
+        /// Loaded mods as "guid@sha256" strings.
+        mods: Vec<String>,
+    },
 }
 
 impl ClientPacket {
@@ -225,6 +239,25 @@ impl ClientPacket {
                 Some(Self::PingResults { entries })
             }
 
+            // ── MOD_HELLO (0xE0) ──────────────────────────────────────────
+            // C→S  [protocol: i16] [helper_version: Str16]
+            //      [mod_count: i16] [mod_count × mod_id: Str16]
+            0xE0 => {
+                let protocol: i16 = cur.read_le().ok()?;
+                let helper_version = Str16::read(&mut cur).ok()?;
+                let count: i16 = cur.read_le().ok()?;
+                let mut mods = Vec::with_capacity(count.max(0) as usize);
+                for _ in 0..count.max(0) {
+                    let id = Str16::read(&mut cur).ok()?;
+                    mods.push(id.value);
+                }
+                Some(Self::ModHello {
+                    protocol,
+                    helper_version: helper_version.value,
+                    mods,
+                })
+            }
+
             // ── JOIN_GRANT (0x2B) ─────────────────────────────────────────
             // C→S  [target: Str16]
             // The client sends only the target username — no status byte.
@@ -296,6 +329,46 @@ impl ClientPacket {
             Self::WorldUpdate { .. }  => PacketId::WorldUpdate,
             Self::JoinReq { .. }      => PacketId::JoinReq,
             Self::SubmitReport { .. } => PacketId::SubmitReport,
+            Self::ModHello { .. }     => PacketId::ModHello,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mirrors the real MOD_HELLO captured from HAModHelper on 2026-06-09:
+    /// envelope [total_len u16][01][qid][03][payload_len u32], then
+    /// [0xE0][protocol i16][helper_version Str16][mod_count i16].
+    #[test]
+    fn parses_mod_hello() {
+        let helper = "0.0.1+6353204837aa2e6e815ef4579324ae4c050242c4@e0e79b81c91212\
+                      4c3f50e75662a15e8eb7bba047dd364d55c4d4a71acc04203d";
+        let helper_utf16: Vec<u8> = helper.encode_utf16()
+            .flat_map(|c| c.to_le_bytes()).collect();
+
+        let mut payload = vec![0xE0u8];
+        payload.extend_from_slice(&1i16.to_le_bytes());
+        payload.extend_from_slice(&(helper_utf16.len() as u16).to_le_bytes());
+        payload.extend_from_slice(&helper_utf16);
+        payload.extend_from_slice(&0i16.to_le_bytes());
+
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(&((payload.len() + 9) as u16).to_le_bytes());
+        pkt.push(0x01);
+        pkt.push(0x01); // qid
+        pkt.push(0x03);
+        pkt.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        pkt.extend_from_slice(&payload);
+
+        match ClientPacket::parse(&pkt) {
+            Some(ClientPacket::ModHello { protocol, helper_version, mods }) => {
+                assert_eq!(protocol, 1);
+                assert_eq!(helper_version, helper);
+                assert!(mods.is_empty());
+            }
+            other => panic!("expected ModHello, got {:?}", other),
         }
     }
 }

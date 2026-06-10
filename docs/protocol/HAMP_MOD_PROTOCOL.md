@@ -37,6 +37,17 @@ i16     mod_count
 mod_count × String  mod_id   (loaded mods, informational/logging)
 ```
 
+HAModHelper's conventions for these fields (servers treat both as opaque
+strings, so matching is automatic):
+
+- `mod_id` = `"{plugin_guid}@{sha256(assembly)}"`, lowercase hex, one per
+  loaded BepInEx plugin, sorted ordinally. HAModHelper itself is **excluded**
+  from the list so a helper-with-no-mods client stays equivalent to vanilla
+  for relay mod matching. Because the hash is part of the string, two players
+  running different builds of the "same" mod count as a mismatch.
+- `helper_version` = `"{version}@{sha256(assembly)}"` of HAModHelper itself
+  (informational; not part of relay matching).
+
 ### `0xE0` — MOD_WELCOME (S→C)
 
 Server's immediate reply to MOD_HELLO. Receipt of this confirms the server is
@@ -72,6 +83,20 @@ Rules:
   channel can be added later if needed.)
 - Namespace `hamp:` is reserved for HAMP built-ins.
 
+## Friend server handshake
+
+The friend server speaks the same `0xE0` MOD_HELLO/MOD_WELCOME exchange
+(framed like any other friend-server packet; the ID is gated in
+`PacketId::from_u8`, so older HAMP builds and stock servers drop it
+silently). HAModHelper sends MOD_HELLO after S→C `0x0B` LOGIN_SUCCESS and
+uses the returned `server_ident` to extend the friends-screen
+"Logged in as:" label with a "Server: HAMP x.y.z" line.
+
+The friend server currently advertises **zero channels** — `0xE1` is not
+handled there; mod channels remain a game-server feature. No mod-matching
+policy is attached to the friend-server hello either; it exists for
+identification only.
+
 ## Relay-session mod matching
 
 In relay (friend-world) sessions the server enforces that every guest's
@@ -93,10 +118,10 @@ re-validated at that moment.
 Kicks are delivered as a `[Server]` chat line plus a `hamp:core` kick notice
 (modded clients can show a proper dialog), then the connection is dropped.
 
-HAModHelper's obligations: send MOD_HELLO promptly after login (well inside
-the grace window), and list every gameplay-affecting mod in `mod_id`s.
-Purely cosmetic/client-side mods MAY be omitted from the list — whatever is
-listed is what must match.
+HAModHelper's obligations: send MOD_HELLO promptly after login (it sends on
+JOIN_CONFIRMED, well inside the grace window). Registration is automatic and
+not opt-in: every loaded plugin is listed by guid + assembly hash (see the
+MOD_HELLO section), so mods cannot exempt themselves from matching.
 
 ## Moderator flag
 

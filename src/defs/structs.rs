@@ -40,6 +40,7 @@ pub enum PacketId {
     SubmitReport  = 0x2E, // C→S  submit a player report (also S→C: show popup)
     ShowWarning   = 0x2F, // S→C  stop it
     GiveGems      = 0x34, // S→C  the server gave you gems
+    ModHello      = 0xE0, // both C→S MOD_HELLO / S→C MOD_WELCOME (HAMP mod protocol)
 }
 
 impl PacketId {
@@ -70,6 +71,7 @@ impl PacketId {
             0x2E => SubmitReport,
             0x2F => ShowWarning,
             0x34 => GiveGems,
+            0xE0 => ModHello,
             _    => return None,
         })
     }
@@ -100,7 +102,8 @@ impl PacketId {
             JoinReq      => "JOIN_REQ",
             SubmitReport => "SUBMIT_REPORT",
             ShowWarning  => "SHOW_WARNING",
-            GiveGems     => "GIVE_GEMS"
+            GiveGems     => "GIVE_GEMS",
+            ModHello     => "MOD_HELLO",
         }
     }
 }

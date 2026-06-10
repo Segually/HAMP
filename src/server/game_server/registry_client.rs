@@ -318,13 +318,30 @@ fn run_session(
         .expect("failed to spawn registry-writer thread");
 
     // ── Reader loop (runs on this thread) ─────────────────────────────────
+    // The read timeout is only a poll interval; a timed-out read is NOT a
+    // disconnect. The connection is declared dead only after IDLE_DEADLINE
+    // with no inbound bytes at all (the writer pings every 15 s, so a healthy
+    // link always has pongs well inside that window).
+    const IDLE_DEADLINE: Duration = Duration::from_secs(60);
     let mut read_half = read_half;
-    read_half.set_read_timeout(Some(Duration::from_secs(25)))?;
+    read_half.set_read_timeout(Some(Duration::from_secs(15)))?;
+    let mut last_inbound = std::time::Instant::now();
 
     loop {
-        let msg = match read_u8(&mut read_half) {
-            Some(v) => v,
-            None    => break,
+        let mut b = [0u8; 1];
+        let msg = match read_half.read_exact(&mut b) {
+            Ok(()) => { last_inbound = std::time::Instant::now(); b[0] }
+            Err(e) if matches!(e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+            {
+                if last_inbound.elapsed() > IDLE_DEADLINE {
+                    eprintln!("[REGISTRY] No traffic from friend server for {}s — assuming dead link",
+                        IDLE_DEADLINE.as_secs());
+                    break;
+                }
+                continue;
+            }
+            Err(_) => break,
         };
         match msg {
             // Pong — keepalive reply, nothing to do.
@@ -395,14 +412,16 @@ fn writer_loop(
 
         tick += 1;
 
+        // Every tick sends a ping — the pong is the reader's only guaranteed
+        // inbound traffic on an idle link, so it must arrive well inside the
+        // reader's idle deadline. Even ticks piggyback the player count.
         let result = if tick % 2 == 0 {
-            // Even ticks: player-count update.
             let n = session.player_count() as i16;
             stream.write_all(&[0x03])
                 .and_then(|_| stream.write_all(&n.to_le_bytes()))
+                .and_then(|_| stream.write_all(&[0x04]))
                 .and_then(|_| stream.flush())
         } else {
-            // Odd ticks: ping.
             stream.write_all(&[0x04]).and_then(|_| stream.flush())
         };
 

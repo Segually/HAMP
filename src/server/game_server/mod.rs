@@ -513,7 +513,7 @@ const MOD_CHANNELS: &[&str] = &["hamp:core", "hamp:tele"];
 
 /// Grace period for a relay guest to send MOD_HELLO before the mod-match
 /// check treats them as unmodded.
-const MOD_CHECK_GRACE_SECS: u64 = 10;
+const MOD_CHECK_GRACE_SECS: u64 = 5;
 
 /// Per-player handshake data from MOD_HELLO (0xE0).
 #[allow(dead_code)]
@@ -548,6 +548,22 @@ fn effective_modset(session: &Session, user: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Human-readable mod list for kick reasons: HAModHelper mod ids are
+/// "guid@sha256" — show the guid plus a short hash prefix, not 64 hex chars.
+/// The hash is the part after the LAST '@', and is only shortened when it
+/// actually looks like a hash, so ids with '@' in the name stay intact.
+fn display_modlist(mods: &[String]) -> String {
+    mods.iter()
+        .map(|m| match m.rsplit_once('@') {
+            Some((name, hash))
+                if hash.len() >= 16 && hash.chars().all(|c| c.is_ascii_hexdigit()) =>
+                    format!("{} ({})", name, &hash[..8]),
+            _ => m.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Relay-mode mod compatibility check for a guest against the session host.
 /// Returns a kick reason when the effective mod sets differ.
 fn relay_mod_mismatch(session: &Session, uid: &str) -> Option<String> {
@@ -564,11 +580,12 @@ fn relay_mod_mismatch(session: &Session, uid: &str) -> Option<String> {
         return None;
     }
     Some(if guest_mods.is_empty() {
-        format!("This world requires mods: {}", host_mods.join(", "))
+        format!("This world requires mods: {}", display_modlist(&host_mods))
     } else if host_mods.is_empty() {
-        format!("This world is unmodded — your mods must be disabled to join: {}", guest_mods.join(", "))
+        format!("This world is unmodded — your mods must be disabled to join: {}", display_modlist(&guest_mods))
     } else {
-        format!("Mod mismatch — world runs: {} | you run: {}", host_mods.join(", "), guest_mods.join(", "))
+        format!("Mod mismatch — world runs: {} | you run: {}",
+            display_modlist(&host_mods), display_modlist(&guest_mods))
     })
 }
 
@@ -697,9 +714,16 @@ fn opd_with_using(opd: &[u8], using_str: &str) -> Vec<u8> {
 // ── Per-client handler ─────────────────────────────────────────────────────
 
 fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc<Session>, registry: Option<registry_client::RegistryHandle>) {
+    use crate::defs::packet::{split_batch_into, FragmentBuffers};
+
     let mut player_id: Option<String> = None;
     let mut read_buf = [0u8; 65536];
     let mut accum: Vec<u8> = Vec::new();
+    // Packets reassembled from fragments and not yet dispatched, plus the
+    // per-stream partial buffers (large packets — teleporter screenshots —
+    // arrive split across several batches; see split_batch_into).
+    let mut pending: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+    let mut partial: FragmentBuffers = FragmentBuffers::new();
 
     println!("[GAME:'{}'] {} connected", session.room_token, addr);
 
@@ -711,20 +735,29 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
         };
         accum.extend_from_slice(&read_buf[..n]);
 
-        // Consume complete framed packets from the accumulation buffer.
-        while !accum.is_empty() {
-            // Handshake probe: single 0x66 byte (no length prefix).
-            if accum[0] == 0x66 {
-                let _ = write_payload(&mut stream, 0, &[0x09, 0x01]);
-                accum.remove(0);
+        // Dispatch reassembled packets; refill from complete wire batches.
+        while !pending.is_empty() || !accum.is_empty() {
+            let data: Vec<u8> = if let Some(frame) = pending.pop_front() {
+                frame
+            } else {
+                // Handshake probe: single 0x66 byte (no length prefix).
+                if accum[0] == 0x66 {
+                    let _ = write_payload(&mut stream, 0, &[0x09, 0x01]);
+                    accum.remove(0);
+                    continue;
+                }
+
+                if accum.len() < 2 { break; }
+                let total_len = u16::from_le_bytes([accum[0], accum[1]]) as usize;
+                if total_len < 3 { accum.clear(); break; } // unframeable garbage
+                if accum.len() < total_len { break; } // wait for more data
+
+                let batch: Vec<u8> = accum.drain(..total_len).collect();
+                let mut frames = Vec::new();
+                split_batch_into(&batch, &mut partial, &mut frames);
+                pending.extend(frames);
                 continue;
-            }
-
-            if accum.len() < 2 { break; }
-            let total_len = u16::from_le_bytes([accum[0], accum[1]]) as usize;
-            if accum.len() < total_len { break; } // wait for more data
-
-            let data: Vec<u8> = accum.drain(..total_len).collect();
+            };
 
             if data.len() < 10 { continue; }
             let pid = data[9];
