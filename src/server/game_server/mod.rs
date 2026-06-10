@@ -209,15 +209,20 @@ pub(crate) struct Session {
     /// Players that completed the MOD_HELLO (0xE0) handshake, keyed by
     /// username. Custom packets are only ever sent to players in this map.
     mod_clients: Mutex<HashMap<String, ModClientInfo>>,
+    /// When false (default), debug builds of HAModHelper are kicked at
+    /// MOD_HELLO — i.e. this is a "Normal" server. Set true for an "Anarchy"
+    /// server that accepts debug clients. See HAMP_MOD_PROTOCOL.md.
+    allow_debug: bool,
 }
 
 impl Session {
-    fn new(room_token: impl Into<String>, mode: SessionMode, pvp_enabled: bool, log_packets: bool, admin_users: Vec<String>) -> Arc<Self> {
+    fn new(room_token: impl Into<String>, mode: SessionMode, pvp_enabled: bool, log_packets: bool, admin_users: Vec<String>, allow_debug: bool) -> Arc<Self> {
         Arc::new(Self {
             room_token: room_token.into(),
             mode,
             pvp_enabled,
             log_packets,
+            allow_debug,
             players: Mutex::new(HashMap::new()),
             shutdown: AtomicBool::new(false),
             listen_addr: Mutex::new(None),
@@ -603,8 +608,20 @@ fn kick_player(session: &Session, uid: &str, reason: &str) {
     let mut body = vec![0x01u8]; // hamp:core 0x01 = kick notice
     body.extend(pack_string(reason));
     send_mod_channel(session, uid, "hamp:core", &body);
+
+    // Give the client time to actually receive and dispatch the notices above
+    // before we drop the socket. Closing immediately makes the client's
+    // disconnect detection win the race against its packet pump, so the mod
+    // never sees the hamp:core notice and the stock "Lost connection to Host"
+    // screen is shown instead of our reason. Half a second is well inside the
+    // client's frame loop and imperceptible for a kick.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
     if let Some(p) = session.players.lock().unwrap().get(uid) {
-        let _ = p.sink.lock().unwrap().shutdown(std::net::Shutdown::Both);
+        // Half-close (send FIN after the queued notices) rather than a full
+        // shutdown: SHUT_RD can turn late inbound bytes into an RST that
+        // discards everything still in flight, including the kick notice.
+        let _ = p.sink.lock().unwrap().shutdown(std::net::Shutdown::Write);
     }
 }
 
@@ -2537,6 +2554,23 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         }
                         println!("[GAME:'{}'] '{}' is modded: HAModHelper {} (proto {}, {} mod(s))",
                             session.room_token, uid, helper_version, protocol, mods.len());
+
+                        // Normal-server gate: reject debug builds of HAModHelper
+                        // (helper_version is "debug:..."; legacy clients with no
+                        // prefix count as release). Register first so the
+                        // hamp:core kick notice reaches them, then kick — the
+                        // disconnect cleanup removes the entry again.
+                        if !session.allow_debug && helper_version.starts_with("debug:") {
+                            session.mod_clients.lock().unwrap()
+                                .insert(uid.clone(), ModClientInfo { protocol, helper_version, mods });
+                            kick_player(&session, uid,
+                                "This is a Normal server — debug builds of HAModHelper aren't allowed here. \
+                                 Use a Release build, or join an Anarchy server.");
+                            // Break to the disconnect cleanup (removes the player,
+                            // decrements the count). `return` would skip it.
+                            break 'outer;
+                        }
+
                         session.mod_clients.lock().unwrap()
                             .insert(uid.clone(), ModClientInfo { protocol, helper_version, mods });
 
@@ -2763,7 +2797,7 @@ pub fn run(cfg: &Config) {
     }
 
     LOG_PACKETS.store(cfg.log_packets, std::sync::atomic::Ordering::Relaxed);
-    let session = Session::new(&cfg.server_name, SessionMode::Managed(Arc::clone(&world)), cfg.pvp_enabled, cfg.log_packets, cfg.admin_users.clone());
+    let session = Session::new(&cfg.server_name, SessionMode::Managed(Arc::clone(&world)), cfg.pvp_enabled, cfg.log_packets, cfg.admin_users.clone(), cfg.allow_debug);
 
     let mut registry_handle: Option<registry_client::RegistryHandle> = None;
 
@@ -2831,7 +2865,7 @@ pub fn spawn_relay_session(room_token: String, cfg: &Config) -> Option<u16> {
     for port in cfg.game_port..=cfg.game_port_max {
         let addr = format!("{}:{}", cfg.host, port);
         if let Ok(listener) = TcpListener::bind(&addr) {
-            let session = Session::new(room_token.clone(), SessionMode::Relay, false, true, Vec::new());
+            let session = Session::new(room_token.clone(), SessionMode::Relay, false, true, Vec::new(), cfg.allow_debug);
             *session.listen_addr.lock().unwrap() = listener.local_addr().ok();
             let accept_session = Arc::clone(&session);
             println!("[GAME] Relay session '{}' → port {}", room_token, port);

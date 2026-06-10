@@ -45,8 +45,15 @@ strings, so matching is automatic):
   from the list so a helper-with-no-mods client stays equivalent to vanilla
   for relay mod matching. Because the hash is part of the string, two players
   running different builds of the "same" mod count as a mismatch.
-- `helper_version` = `"{version}@{sha256(assembly)}"` of HAModHelper itself
-  (informational; not part of relay matching).
+- `helper_version` = `"{build_type}:{version}@{sha256(assembly)}"` of
+  HAModHelper itself. `build_type` is `debug` or `release`, resolved from the
+  mod's DEBUG compile constant (cannot be flipped at runtime). It is a prefix,
+  so the "hash = text after the last `@`" rule still holds for older parsers.
+  Informational and not part of relay matching, **but** a server MAY refuse a
+  client by build type — e.g. a "Normal" (non-anarchy) server kicks
+  `debug:`-prefixed clients via the usual `hamp:core` kick notice. Parse with
+  `helper_version.StartsWith("debug:")`; treat a missing/absent prefix
+  (legacy clients) as `release`.
 
 ### `0xE0` — MOD_WELCOME (S→C)
 
@@ -95,7 +102,10 @@ uses the returned `server_ident` to extend the friends-screen
 The friend server currently advertises **zero channels** — `0xE1` is not
 handled there; mod channels remain a game-server feature. No mod-matching
 policy is attached to the friend-server hello either; it exists for
-identification only.
+identification only. In particular the friend server does **not** gate on
+build type — the `allow_debug` / Normal-vs-Anarchy check is a game-server
+concern (it has the `hamp:core` kick channel to show a reason). The friend
+hub accepts debug and release clients alike.
 
 ## Relay-session mod matching
 

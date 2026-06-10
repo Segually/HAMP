@@ -105,6 +105,12 @@ pub struct Config {
     /// damage on the client side.  Set to true to enable combat between players.
     pub pvp_enabled: bool,
 
+    /// Whether debug builds of HAModHelper may join this game server. When
+    /// false (default) this is a "Normal" server: clients whose MOD_HELLO
+    /// helper_version is prefixed `debug:` are kicked at handshake. Set true
+    /// for an "Anarchy" server. See docs/protocol/HAMP_MOD_PROTOCOL.md.
+    pub allow_debug: bool,
+
     /// Print a hex dump of every C→S packet to stdout.  Useful for debugging
     /// protocol issues.  Can be noisy on busy servers.
     pub log_packets: bool,
@@ -173,6 +179,7 @@ impl Default for Config {
 
             admin_users:    Vec::new(),
             pvp_enabled:    false,
+            allow_debug:    false,
             log_packets:    true,
 
             friend_registry_host:   String::new(),
@@ -308,6 +315,11 @@ start_biome_radius = 3
 
 # Enable player-vs-player combat (default: false).
 # pvp_enabled = false
+
+# Allow debug builds of HAModHelper to join (default: false = "Normal" server).
+# When false, clients whose MOD_HELLO advertises a debug build are kicked at
+# the handshake. Set true for an "Anarchy" server.
+# allow_debug = false
 
 # ── Friend-server registry ──────────────────────────────────────────────────
 # Uncomment all three to have the game server register itself with a friend
