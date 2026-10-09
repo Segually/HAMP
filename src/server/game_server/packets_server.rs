@@ -188,6 +188,7 @@ pub struct InteriorInfo<'a> {
 pub struct ZoneData<'a> {
     pub zone_name: &'a str,
     pub interior: Option<InteriorInfo<'a>>,
+    pub claims: &'a [super::land_claims::LandClaim],
 }
 impl ServerPacket for ZoneData<'_> {
     fn to_payload(&self) -> Vec<u8> {
@@ -214,7 +215,8 @@ impl ServerPacket for ZoneData<'_> {
                 p.extend(pack_string(self.zone_name)); // outer_item_zone = self for plain zones
             }
         }
-        p.extend_from_slice(&0i16.to_le_bytes()); // timer_count = 0
+        p.extend_from_slice(&(self.claims.len() as i16).to_le_bytes());
+        for claim in self.claims { claim.pack_zone(&mut p); }
         p.push(0x00); // type
         p
     }
