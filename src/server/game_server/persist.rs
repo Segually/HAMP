@@ -4,7 +4,7 @@
 //
 //  ─── Header ────────────────────────────────────────────────────────────────
 //  [4]  magic:   b"HAMP"
-//  [1]  version: u8 = 6 (reader accepts 1–6)
+//  [1]  version: u8 = 7 (reader accepts 1–7)
 //
 //  ─── Template ──────────────────────────────────────────────────────────────
 //  [8]  seed: u64 le
@@ -58,7 +58,7 @@
 //  ─── Canonical land claims (v6+) ──────────────────────────────────────────
 //  [4] claim_count: u32 le
 //  per claim: [str location_key][str owner][str whitelist1][str whitelist2]
-//             [8] expires_at: u64 Unix seconds, preserved across restart
+//             [8] expires_at: u64 Unix seconds; v7 permits MAX for permanent claims
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -68,14 +68,15 @@ use std::sync::{Mutex, RwLock};
 
 use super::baskets::BasketStore;
 use super::generator::{BiomeWeights, WorldGenerator, WorldTemplate, ZoneConfig};
-use super::land_claims::{ClaimLocation, LandClaim};
+use super::land_claims::{ClaimLocation, LandClaim, MAX_CLIENT_EXPIRY, PERMANENT_EXPIRY, is_admin_claim};
+use super::world_mutations::Item;
 use super::parse_shack_info;
 use super::special_generators;
 use super::world_state::{Chunk, ChunkElement, InteriorData, Teleporter, WorldState, ZoneEntry};
 
 const MAGIC: &[u8; 4] = b"HAMP";
 
-const VERSION: u8 = 6;
+const VERSION: u8 = 7;
 pub const FILE_NAME: &str = "world.hws";
 
 // ── Low-level write helpers ───────────────────────────────────────────────
@@ -310,11 +311,11 @@ fn read_state<R: Read>(mut r: R) -> io::Result<WorldState> {
                 let expires_at_secs = ru64(&mut r)?;
                 if let Some(location) = ClaimLocation::parse(&claim_key) {
                     if chrono::DateTime::<chrono::Utc>::from_timestamp(expires_at_secs as i64, 0).is_some()
-                        && expires_at_secs <= 253_402_300_799 {
+                        && expires_at_secs <= MAX_CLIENT_EXPIRY {
                         let mut claim = LandClaim { location, owner: user0, whitelist: [user1, user2], expires_at: expires_at_secs };
                         claim.normalize();
                         // Collapse old duplicated chunk records without restarting expiry.
-                        let entry = claims.entry(claim_key).or_insert_with(|| claim.clone());
+                        let entry = claims.entry(claim.location.key()).or_insert_with(|| claim.clone());
                         if claim.expires_at > entry.expires_at { *entry = claim; }
                     }
                 }
@@ -376,12 +377,27 @@ fn read_state<R: Read>(mut r: R) -> io::Result<WorldState> {
             let expires_at = ru64(&mut r)?;
             let location = ClaimLocation::parse(&key)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid claim location"))?;
-            if expires_at > 253_402_300_799 {
+            if expires_at > MAX_CLIENT_EXPIRY && !(version >= 7 && expires_at == PERMANENT_EXPIRY) {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid claim expiry"));
             }
             let mut claim = LandClaim { location, owner, whitelist, expires_at };
             claim.normalize();
-            claims.insert(key, claim);
+            claims.insert(claim.location.key(), claim);
+        }
+    }
+
+    // Upgrade existing Admin Land Claims too: their old 32,000-day deadline
+    // must not remain an authoritative expiry after installing this version.
+    for chunk in chunks.values_mut().flat_map(|zone| zone.values_mut()) {
+        for element in &mut chunk.elements {
+            let Some(mut item) = Item::decode(&element.item_data) else { continue; };
+            if !is_admin_claim(item.id()) { continue; }
+            let Some(at) = ClaimLocation::new(&chunk.zone, chunk.x, chunk.z, element.cell_x as i16, element.cell_z as i16) else { continue; };
+            if let Some(claim) = claims.get_mut(&at.key()) {
+                claim.expires_at = PERMANENT_EXPIRY;
+                item.claim_expiry(PERMANENT_EXPIRY);
+                element.item_data = item.encode();
+            }
         }
     }
 
@@ -444,7 +460,7 @@ mod tests {
         claim.whitelist = ["User2".into(), "GUEST".into()];
         world.land_claims.write().unwrap().insert(at.key(), claim.clone());
         let mut bytes = Vec::new(); write_state(&world, &mut bytes).unwrap();
-        assert_eq!(bytes[4], 6);
+        assert_eq!(bytes[4], VERSION);
         let restored = read_state(Cursor::new(bytes)).unwrap();
         let saved = restored.land_claims.read().unwrap()[&at.key()].clone();
         assert_eq!(saved.owner, "user"); assert_eq!(saved.whitelist, ["user2", "guest"]);
@@ -498,9 +514,33 @@ mod tests {
     #[test]
     fn malformed_claim_expiry_is_rejected_before_client_calendar_conversion() {
         let world = world(); let at = ClaimLocation::new("overworld", 0, 0, 4, 5).unwrap();
-        let mut claim = LandClaim::new(at.clone(), "User", 3, unix_now()); claim.expires_at = u64::MAX;
+        let mut claim = LandClaim::new(at.clone(), "User", 3, unix_now()); claim.expires_at = u64::MAX - 1;
         world.land_claims.write().unwrap().insert(at.key(), claim);
         let mut bytes = Vec::new(); write_state(&world, &mut bytes).unwrap();
         assert!(read_state(Cursor::new(bytes)).is_err());
+    }
+
+    #[test]
+    fn old_admin_deadlines_become_permanent_and_survive_another_save() {
+        let world = world(); let at = ClaimLocation::new("overworld", 0, 0, 4, 5).unwrap();
+        let mut claim = LandClaim::new(at.clone(), "User", 3, unix_now());
+        claim.expires_at = unix_now() - 1; // even a previously due admin deadline is not retained
+        claim.whitelist = ["User2".into(), "".into()];
+        world.land_claims.write().unwrap().insert(at.key(), claim);
+        world.chunks.write().unwrap().get_mut("overworld").unwrap().get_mut(&(0, 0)).unwrap().elements.push(ChunkElement {
+            cell_x: 4, cell_z: 5, rotation: 2, item_data: Item::named("Admin Land Claim").encode(),
+        });
+        let mut old_bytes = Vec::new(); write_state(&world, &mut old_bytes).unwrap(); old_bytes[4] = 6;
+        let migrated = read_state(Cursor::new(old_bytes)).unwrap();
+        assert_eq!(migrated.land_claims.read().unwrap()[&at.key()].expires_at, PERMANENT_EXPIRY);
+        let chunks = migrated.chunks.read().unwrap();
+        let item = Item::decode(&chunks["overworld"][&(0, 0)].elements.last().unwrap().item_data).unwrap();
+        assert_eq!(item.id(), "Admin Land Claim"); drop(chunks);
+        let mut bytes = Vec::new(); write_state(&migrated, &mut bytes).unwrap();
+        assert_eq!(bytes[4], 7);
+        let restored = read_state(Cursor::new(bytes)).unwrap();
+        assert!(restored.can_build("overworld", 1, 1, "USER2", false, u64::MAX));
+        assert!(!restored.can_build("overworld", 1, 1, "stranger", false, u64::MAX));
+        assert_eq!(restored.land_claims.read().unwrap()[&at.key()].expires_at, PERMANENT_EXPIRY);
     }
 }

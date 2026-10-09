@@ -241,7 +241,8 @@ impl Session {
     }
 
     fn is_admin(&self, user: &str) -> bool {
-        self.admin_users.iter().any(|a| a.eq_ignore_ascii_case(user))
+        let key = crate::utils::text::username_key(user);
+        !key.is_empty() && self.admin_users.iter().any(|a| crate::utils::text::username_key(a) == key)
     }
 
     pub(crate) fn player_count(&self) -> usize {
@@ -1678,7 +1679,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             // Mutation parsing and authoritative land permission checks.
             0x20 | 0x21 | 0x22 | 0x23 => {
                 if let Some(ref uid) = player_id {
-                    world_mutations::handle(&session, uid, pid, &data[10..]);
+                    if world_mutations::handle(&session, uid, pid, &data[10..]) { break 'outer; }
                 }
             }
 
@@ -2618,7 +2619,7 @@ pub fn spawn_relay_session(room_token: String, cfg: &Config) -> Option<u16> {
     for port in cfg.game_port..=cfg.game_port_max {
         let addr = format!("{}:{}", cfg.host, port);
         if let Ok(listener) = TcpListener::bind(&addr) {
-            let session = Session::new(room_token.clone(), SessionMode::Relay, false, true, Vec::new(), cfg.allow_debug);
+            let session = Session::new(room_token.clone(), SessionMode::Relay, false, true, cfg.admin_users.clone(), cfg.allow_debug);
             *session.listen_addr.lock().unwrap() = listener.local_addr().ok();
             let accept_session = Arc::clone(&session);
             println!("[GAME] Relay session '{}' → port {}", room_token, port);

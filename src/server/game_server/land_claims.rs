@@ -8,6 +8,15 @@ use super::world_state::WorldState;
 use crate::defs::packet::pack_string;
 use crate::utils::text::username_key;
 
+/// Server-side sentinel, never interpreted as a calendar timestamp on the wire.
+pub const PERMANENT_EXPIRY: u64 = u64::MAX;
+pub const MAX_CLIENT_EXPIRY: u64 = 253_402_300_799; // .NET DateTime.MaxValue, whole seconds
+pub const ADMIN_WIRE_DAYS: u64 = 32_000;
+
+pub fn is_admin_claim(item_id: &str) -> bool {
+    item_id == "Admin Land Claim"
+}
+
 pub fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -82,12 +91,16 @@ impl LandClaim {
             location,
             owner: username_key(owner),
             whitelist: Default::default(),
-            expires_at: now + days * 86_400,
+            expires_at: if days == ADMIN_WIRE_DAYS {
+                PERMANENT_EXPIRY
+            } else {
+                now + days * 86_400
+            },
         }
     }
 
     pub fn active(&self, now: u64) -> bool {
-        self.expires_at > now && !self.owner.is_empty()
+        !self.owner.is_empty() && (self.expires_at == PERMANENT_EXPIRY || self.expires_at > now)
     }
 
     pub fn allows(&self, username: &str) -> bool {
@@ -111,6 +124,11 @@ impl LandClaim {
     }
 
     fn remaining(&self, now: u64) -> [i16; 4] {
+        // The stock protocol has no permanent flag. Send its admin-claim timer
+        // convention without letting that display timer expire server protection.
+        if self.expires_at == PERMANENT_EXPIRY {
+            return [ADMIN_WIRE_DAYS as i16, 0, 0, 0];
+        }
         let seconds = self.expires_at.saturating_sub(now);
         [
             (seconds / 86_400).min(i16::MAX as u64) as i16,
@@ -134,7 +152,7 @@ impl LandClaim {
     /// ZoneData.UnpackFromWeb: key, absolute S/M/H/D/month/year, identities.
     pub fn pack_zone(&self, out: &mut Vec<u8>) {
         out.extend(pack_string(&self.location.key()));
-        let at = DateTime::<Utc>::from_timestamp(self.expires_at as i64, 0)
+        let at = DateTime::<Utc>::from_timestamp(self.expires_at.min(MAX_CLIENT_EXPIRY) as i64, 0)
             .expect("validated claim expiry");
         for value in [
             at.second() as i16,
@@ -163,11 +181,13 @@ impl LandClaim {
     }
 }
 
+/// Ordinary lifetimes, plus the client's admin timer convention. LandClaim::new
+/// stores that admin value as PERMANENT_EXPIRY, never as a timed deadline.
 pub fn claim_days(item_id: &str) -> Option<u64> {
     match item_id {
         "3-day Land Claim" => Some(3),
         "8-day Land Claim" => Some(8),
-        "Admin Land Claim" => Some(32_000),
+        "Admin Land Claim" => Some(ADMIN_WIRE_DAYS),
         _ => None,
     }
 }
@@ -413,17 +433,32 @@ pub(crate) mod tests {
     #[test]
     fn expiry_is_exact_and_durations_fit_wire_shorts() {
         let at = ClaimLocation::new("overworld", 0, 0, 0, 0).unwrap();
-        for (id, days) in [
-            ("3-day Land Claim", 3),
-            ("8-day Land Claim", 8),
-            ("Admin Land Claim", 32_000),
-        ] {
+        for (id, days) in [("3-day Land Claim", 3), ("8-day Land Claim", 8)] {
             assert_eq!(claim_days(id), Some(days));
             let claim = LandClaim::new(at.clone(), "User", days, 100);
             assert!(claim.active(claim.expires_at - 1));
             assert!(!claim.active(claim.expires_at));
             assert_eq!(claim.remaining(100), [days as i16, 0, 0, 0]);
         }
+        let permanent = LandClaim::new(
+            at.clone(),
+            "User",
+            claim_days("Admin Land Claim").unwrap(),
+            100,
+        );
+        assert_eq!(permanent.expires_at, PERMANENT_EXPIRY);
+        assert!(permanent.active(u64::MAX));
+        assert_eq!(
+            permanent.remaining(u64::MAX),
+            [ADMIN_WIRE_DAYS as i16, 0, 0, 0]
+        );
+        let mut zone = Vec::new();
+        permanent.pack_zone(&mut zone);
+        let (_, offset) = unpack_string(&zone, 0);
+        assert_eq!(
+            i16::from_le_bytes(zone[offset + 10..offset + 12].try_into().unwrap()),
+            9999
+        );
         assert_eq!(claim_days("Old Land Claim"), None);
         let at = ClaimLocation::new("overworld", i16::MIN, i16::MAX, 0, 0).unwrap();
         assert!(!at.covers("overworld", i16::MAX, i16::MIN));

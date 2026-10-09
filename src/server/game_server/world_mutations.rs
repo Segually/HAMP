@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use super::land_claims::{
-    ClaimLocation, LandClaim, claim_days, outside_edit, outside_remove, unix_now,
+    ClaimLocation, LandClaim, MAX_CLIENT_EXPIRY, claim_days, is_admin_claim, outside_edit,
+    outside_remove, unix_now,
 };
 use super::world_state::{Chunk, ChunkElement, InteriorData, WorldState, ZoneEntry};
 use super::{InteriorInfo, Session, SessionMode, ZoneData, parse_shack_info, special_generators};
@@ -59,8 +60,9 @@ impl Item {
         out
     }
 
-    fn claim_expiry(&mut self, expires_at: u64) {
-        let at = DateTime::<Utc>::from_timestamp(expires_at as i64, 0).expect("claim expiry");
+    pub(super) fn claim_expiry(&mut self, expires_at: u64) {
+        let at = DateTime::<Utc>::from_timestamp(expires_at.min(MAX_CLIENT_EXPIRY) as i64, 0)
+            .expect("claim expiry");
         self.strings
             .insert("has_respawn_landclaim_spawn".into(), "true".into());
         self.strings.insert(
@@ -167,6 +169,16 @@ struct Mutation {
 }
 
 impl Mutation {
+    fn places_admin_claim(&self) -> bool {
+        match &self.action {
+            Action::Build(item, ..) => is_admin_claim(item.id()),
+            Action::Replace { new, old, .. } => {
+                is_admin_claim(new.id()) && !is_admin_claim(old.id())
+            }
+            _ => false,
+        }
+    }
+
     fn parse(opcode: u8, bytes: &[u8]) -> Option<Self> {
         let mut reader = Reader { bytes, at: 0 };
         let result = match opcode {
@@ -305,6 +317,9 @@ fn apply(
     admin: bool,
     now: u64,
 ) -> Result<Applied, &'static str> {
+    if mutation.places_admin_claim() && !admin {
+        return Err("admin claim requires server administrator permission");
+    }
     let at = &mutation.location;
     if world.claim_root(&at.zone, at.cx, at.cz).is_none() {
         return Err("unknown zone");
@@ -377,9 +392,6 @@ fn apply(
                 return Err("object already exists");
             }
             if let Some(days) = claim_days(item.id()) {
-                if item.id() == "Admin Land Claim" && !admin {
-                    return Err("admin claim requires moderator permission");
-                }
                 if !world.can_place_claim(at, user, admin, now) {
                     return Err("land claim would overlap foreign land");
                 }
@@ -644,11 +656,46 @@ fn correct(session: &Session, world: &WorldState, user: &str, mutation: &Mutatio
     }
 }
 
-pub(super) fn handle(session: &Session, user: &str, opcode: u8, bytes: &[u8]) {
+/// True tells the connection handler to stop dispatching and disconnect the player.
+pub(super) fn handle(session: &Session, user: &str, opcode: u8, bytes: &[u8]) -> bool {
     let Some(mutation) = Mutation::parse(opcode, bytes) else {
-        return;
+        return false;
     };
     let _updates = session.world_updates.lock().unwrap();
+    if mutation.places_admin_claim() && !session.is_admin(user) {
+        // The client already placed the object optimistically. Undo it before
+        // disconnecting, without generating, persisting, or relaying the placement.
+        let undo = match &mutation.action {
+            Action::Build(item, rotation, _) => {
+                Some(Action::Remove(item.clone(), *rotation, String::new()))
+            }
+            Action::Replace {
+                new, old, rotation, ..
+            } => Some(Action::Replace {
+                new: old.clone(),
+                old: new.clone(),
+                rotation: *rotation,
+                cache: String::new(),
+            }),
+            _ => None,
+        };
+        if let Some(action) = undo {
+            session.send_to(
+                user,
+                &Mutation {
+                    location: mutation.location.clone(),
+                    action,
+                }
+                .packet(user),
+            );
+        }
+        super::kick_player(
+            session,
+            user,
+            "Only server administrators may place Admin Land Claims.",
+        );
+        return true;
+    }
     match &session.mode {
         SessionMode::Relay => session.broadcast(&mutation.packet(user), Some(user)),
         SessionMode::Managed(world) => {
@@ -659,7 +706,7 @@ pub(super) fn handle(session: &Session, user: &str, opcode: u8, bytes: &[u8]) {
                 .get(user)
                 .map(|player| player.zone.lock().unwrap().clone());
             if player_zone.as_deref() != Some(&mutation.location.zone) {
-                return;
+                return false;
             }
             let now = unix_now();
             expire_locked(session, world, now);
@@ -682,6 +729,7 @@ pub(super) fn handle(session: &Session, user: &str, opcode: u8, bytes: &[u8]) {
             }
         }
     }
+    false
 }
 
 pub(super) fn expire(session: &Session, now: u64) {
@@ -1185,6 +1233,166 @@ mod tests {
         let mut packet = vec![0; length];
         client.read_exact(&mut packet).unwrap();
         packet
+    }
+
+    #[test]
+    fn unauthorized_admin_placement_is_undone_and_kicked_before_any_world_change() {
+        use std::io::Read;
+        for relay in [false, true] {
+            let world = Arc::new(world());
+            let mode = if relay {
+                SessionMode::Relay
+            } else {
+                SessionMode::Managed(world.clone())
+            };
+            let session = Session::new("test", mode, false, false, vec![], false);
+            let mut offender = attach(&session, "user", "overworld");
+            let mut observer = attach(&session, "user2", "overworld");
+            let before = world.chunks.read().unwrap()["overworld"].len();
+            assert!(handle(
+                &session,
+                "user",
+                32,
+                &request(&build(at(50, 50), "Admin Land Claim"))
+            ));
+            assert_eq!(receive(&mut offender)[0], 33);
+            assert_eq!(offender.read(&mut [0u8; 1]).unwrap(), 0); // queued rollback followed by FIN
+            assert_eq!(world.chunks.read().unwrap()["overworld"].len(), before);
+            assert!(world.land_claims.read().unwrap().is_empty());
+            observer
+                .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            assert!(observer.read(&mut [0u8; 1]).is_err()); // no placement broadcast
+        }
+    }
+
+    #[test]
+    fn configured_admin_claims_never_expire_and_cannot_be_expired_by_a_client() {
+        let config: crate::utils::config::Config =
+            toml::from_str("admin_users = ['USER']").unwrap();
+        let world = Arc::new(world());
+        let session = Session::new(
+            "test",
+            SessionMode::Managed(world.clone()),
+            false,
+            false,
+            config.admin_users,
+            false,
+        );
+        let mut admin = attach(&session, "user", "overworld");
+        let anchor = at(0, 0);
+        assert!(session.is_admin("User"));
+        assert!(!handle(
+            &session,
+            "user",
+            32,
+            &request(&build(anchor.clone(), "Admin Land Claim"))
+        ));
+        assert_eq!(receive(&mut admin)[0], 34);
+        let claim = world.land_claims.read().unwrap()[&anchor.key()].clone();
+        assert_eq!(
+            claim.expires_at,
+            super::super::land_claims::PERMANENT_EXPIRY
+        );
+        expire(&session, u64::MAX);
+        assert!(world.can_build("overworld", 1, 1, "USER", false, u64::MAX));
+        assert!(!world.can_build("overworld", 1, 1, "stranger", false, u64::MAX));
+        let item = stored(&world, &anchor, "Admin Land Claim");
+        assert_eq!(
+            item.strings["UTC_dateTime_landclaim_spawn"],
+            "9999-12-31T23:59:59.0000000Z"
+        );
+        let automatic = Mutation {
+            location: anchor.clone(),
+            action: Action::Replace {
+                new: Item::named("Old Land Claim"),
+                old: item.clone(),
+                rotation: 2,
+                cache: String::new(),
+            },
+        };
+        assert!(apply(&world, automatic, "user", true, u64::MAX).is_err());
+        assert_eq!(stored(&world, &anchor, "Admin Land Claim"), item);
+    }
+
+    #[test]
+    fn converting_an_ordinary_item_into_an_admin_claim_also_kicks() {
+        let world = Arc::new(world());
+        let session = Session::new(
+            "test",
+            SessionMode::Managed(world.clone()),
+            false,
+            false,
+            vec![],
+            false,
+        );
+        let mut offender = attach(&session, "user", "overworld");
+        let anchor = at(0, 0);
+        apply(
+            &world,
+            build(anchor.clone(), "Stone"),
+            "user",
+            false,
+            unix_now(),
+        )
+        .unwrap();
+        let mutation = Mutation {
+            location: anchor.clone(),
+            action: Action::Replace {
+                new: Item::named("Admin Land Claim"),
+                old: Item::named("Stone"),
+                rotation: 2,
+                cache: String::new(),
+            },
+        };
+        assert!(handle(&session, "user", 34, &request(&mutation)));
+        assert_eq!(receive(&mut offender)[0], 34); // inverse replacement
+        assert_eq!(stored(&world, &anchor, "Stone").id(), "Stone");
+        assert!(world.land_claims.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn kicked_connection_cannot_dispatch_more_mutations_in_the_same_batch() {
+        use std::io::{Read, Write};
+        let world = Arc::new(world());
+        let session = Session::new(
+            "test",
+            SessionMode::Managed(world.clone()),
+            false,
+            false,
+            vec![],
+            false,
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let (stream, address) = listener.accept().unwrap();
+        let handler_session = session.clone();
+        let handler = std::thread::spawn(move || {
+            super::super::handle_client(stream, address, handler_session, None)
+        });
+        let mut login = vec![38];
+        login.extend(pack_string("test"));
+        login.extend(pack_string("user"));
+        let mut packets = crate::defs::packet::craft_batch(2, &login);
+        for (opcode, mutation) in [
+            (32, build(at(50, 50), "Admin Land Claim")),
+            (32, build(at(51, 51), "Stone")),
+        ] {
+            let mut payload = vec![opcode];
+            payload.extend(request(&mutation));
+            packets.extend(crate::defs::packet::craft_batch(2, &payload));
+        }
+        client.write_all(&packets).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        handler.join().unwrap();
+        assert!(!response.is_empty());
+        assert!(session.players.lock().unwrap().is_empty());
+        assert!(world.land_claims.read().unwrap().is_empty());
+        assert_eq!(world.chunks.read().unwrap()["overworld"].len(), 1);
     }
 
     #[test]
