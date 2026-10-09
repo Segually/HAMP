@@ -19,6 +19,7 @@
 pub mod baskets;
 pub mod generator;
 pub mod land_claims;
+mod player_names;
 mod world_mutations;
 pub mod packets_client;
 pub mod packets_server;
@@ -159,6 +160,8 @@ fn parse_start_biome(name: &str) -> Option<i16> {
 // ── Per-session player ─────────────────────────────────────────────────────
 
 struct GamePlayer {
+    /// Received spelling and friend-server punctuated name, independent of identity.
+    display_name: Mutex<player_names::DisplayName>,
     /// Cloned stream handle used by other threads to push data to this player.
     sink:         Mutex<TcpStream>,
     /// Last received PLAYER_DATA blob (C→S 0x03 body), replayed to players who join later.
@@ -243,6 +246,16 @@ impl Session {
     fn is_admin(&self, user: &str) -> bool {
         let key = crate::utils::text::username_key(user);
         !key.is_empty() && self.admin_users.iter().any(|a| crate::utils::text::username_key(a) == key)
+    }
+
+    fn display_name(&self, user: &str, registry: Option<&registry_client::RegistryHandle>) -> String {
+        let player = self.players.lock().unwrap()
+            .get(&crate::utils::text::username_key(user)).cloned();
+        match player {
+            Some(player) => player.display_name.lock().unwrap()
+                .resolve(|received| registry.and_then(|r| r.get_display_name(received))),
+            None => user.to_string(),
+        }
     }
 
     pub(crate) fn player_count(&self) -> usize {
@@ -808,6 +821,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                     Err(e) => { eprintln!("[GAME] try_clone failed for {}: {}", addr, e); break; }
                 };
                 let player = Arc::new(GamePlayer {
+                    display_name: Mutex::new(player_names::DisplayName::new(if token.is_empty() { &uid } else { &token })),
                     sink:         Mutex::new(cloned),
                     initial_data: Mutex::new(None),
                     zone:         Mutex::new("overworld".to_string()),
@@ -890,7 +904,8 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                 let _ = write_payload(&mut stream, 2, &ZoneData { zone_name: &zone_name, interior: None, claims: &[] }.to_payload());
 
                 // 6. S→C 0x07: join notification (broadcast to others)
-                session.broadcast(&JoinNotif { username: &uid, joined: true }, Some(uid.as_str()));
+                let display = session.display_name(&uid, registry.as_ref());
+                session.broadcast(&JoinNotif { username: &uid, display: &display, joined: true }, Some(uid.as_str()));
 
                 // Relay: give the client MOD_CHECK_GRACE_SECS to declare its
                 // mods (0xE0), then verify against the host's mod set. Vanilla
@@ -1009,11 +1024,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                         std::thread::spawn(move || {
                             std::thread::sleep(std::time::Duration::from_secs(1));
 
-                            let get_display = |name: &str| -> String {
-                                reg_owned.as_ref()
-                                    .and_then(|r| r.get_display_name(name))
-                                    .unwrap_or_else(|| name.to_string())
-                            };
+                            let get_display = |name: &str| sess.display_name(name, reg_owned.as_ref());
 
                             // 1. Broadcast this player to everyone in the same zone.
                             let my_display = get_display(&uid_owned);
@@ -1519,7 +1530,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                     let msg = crate::utils::text::strip_rich_text(&raw_msg);
                     let mut pkt = vec![0x06u8];
                     pkt.extend(pack_string(uid));  // player_id
-                    pkt.extend(pack_string(uid));  // display_name (same for now)
+                    pkt.extend(pack_string(&session.display_name(uid, registry.as_ref())));
                     pkt.extend(pack_string(&msg)); // message
                     pkt.push(0x00);                // type: 0 = public
                     session.broadcast(&pkt, None); // include sender so they see own msg
@@ -1604,9 +1615,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
                             .get(uid.as_str())
                             .and_then(|p| p.initial_data.lock().unwrap().clone());
                         if let Some(init) = init {
-                            let disp = registry.as_ref()
-                                .and_then(|r| r.get_display_name(uid))
-                                .unwrap_or_else(|| uid.to_string());
+                            let disp = session.display_name(uid, registry.as_ref());
                             session.broadcast_zone(
                                 &PlayerNearby { username: uid, display: &disp, opd: &init },
                                 &zone_name, Some(uid.as_str()));
@@ -2384,6 +2393,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
 
     // Disconnect cleanup: remove player and notify others via 0x13 type=gone + 0x07 leave.
     if let Some(ref uid) = player_id {
+        let display = session.display_name(uid, None);
         let player_zone = session.players.lock().unwrap()
             .get(uid.as_str())
             .map(|p| p.zone.lock().unwrap().clone())
@@ -2396,7 +2406,7 @@ fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr, session: Arc
             &ReleaseInteractingObject { player: uid },
             &player_zone, Some(uid.as_str()));
         session.broadcast(&PlayerGone { username: uid }, None);
-        session.broadcast(&JoinNotif { username: uid, joined: false }, None);
+        session.broadcast(&JoinNotif { username: uid, display: &display, joined: false }, None);
 
         // Remove from world state tracking.
         if let SessionMode::Managed(ref world) = session.mode {

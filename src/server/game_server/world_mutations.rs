@@ -1217,6 +1217,7 @@ mod tests {
         session.players.lock().unwrap().insert(
             user.into(),
             Arc::new(super::super::GamePlayer {
+                display_name: std::sync::Mutex::new(super::super::player_names::DisplayName::new(user)),
                 sink: std::sync::Mutex::new(sink),
                 initial_data: std::sync::Mutex::new(None),
                 zone: std::sync::Mutex::new(zone.into()),
